@@ -1,3 +1,5 @@
+#!/bin/bash
+
 # Installing Docker
 sudo dnf install dnf-plugins-core -y
 sudo dnf config-manager --add-repo https://download.docker.com/linux/fedora/docker-ce.repo -y
