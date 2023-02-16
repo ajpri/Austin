@@ -16,3 +16,6 @@ sudo yum install xe-guest-utilities-latest -y
 sudo systemctl enable xe-linux-distribution
 sudo systemctl start xe-linux-distribution
 
+#Install additional software
+sudo dnf install neofetch -y
+sudo dnf install nano -y
