@@ -19,3 +19,18 @@ sudo systemctl start xe-linux-distribution
 #Install additional software
 sudo dnf install neofetch -y
 sudo dnf install nano -y
+
+# Setup Mail to point to server
+sudo dnf install -y ssmtp
+sudo cp /etc/ssmtp/ssmtp.conf /etc/ssmtp/ssmtp.conf.orig
+sudo bash -c 'cat > /etc/ssmtp/ssmtp.conf' << EOF
+mailhub=10.102.0.111:2525
+UseTLS=NO
+UseSTARTTLS=NO
+hostname=localhost
+EOF
+
+# Test the configuration by sending a test email
+echo "$HOSTNAME is configured" | mail -s "Test Email" ultralife@pritchett.info
+
+echo "Done."
