@@ -9,7 +9,7 @@ sudo systemctl enable docker
 
 #Spinning Up Portainer and Watchtower
 sudo docker run -d -p 8000:8000 -p 9443:9443 --name portainer --restart=always -v /var/run/docker.sock:/var/run/docker.sock -v portainer_data:/data portainer/portainer-ce:latest
-sudo docker run -d --name watchtower -v /var/run/docker.sock:/var/run/docker.sock containrrr/watchtower
+sudo docker run -d --name watchtower --restart=always -v /var/run/docker.sock:/var/run/docker.sock containrrr/watchtower
 
 #Installing XCP-ng Guest Utilities
 sudo yum install xe-guest-utilities-latest -y
