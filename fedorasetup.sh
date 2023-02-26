@@ -22,6 +22,7 @@ sudo systemctl start xe-linux-distribution
 #Install additional software
 sudo dnf install neofetch -y
 sudo dnf install nano -y
+sudo dnf install mailx -y
 
 # Setup Mail to point to server
 sudo dnf install -y ssmtp
@@ -30,7 +31,7 @@ sudo bash -c 'cat > /etc/ssmtp/ssmtp.conf' << EOF
 mailhub=notify.pritchett.info:2525
 UseTLS=NO
 UseSTARTTLS=NO
-hostname=localhost
+hostname=$(hostname)
 EOF
 
 # Test the configuration by sending a test email
