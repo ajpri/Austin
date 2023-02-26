@@ -7,10 +7,6 @@ sudo dnf install docker-ce docker-ce-cli containerd.io -y
 sudo systemctl start docker
 sudo systemctl enable docker
 
-#Spinning Up Portainer and Watchtower
-sudo docker run -d -p 8000:8000 -p 9443:9443 --name portainer --restart=always -v /var/run/docker.sock:/var/run/docker.sock -v portainer_data:/data portainer/portainer-ce:latest
-sudo docker run -d --name watchtower --restart=always -v /var/run/docker.sock:/var/run/docker.sock containrrr/watchtower
-
 #Run Docker Prune Sunday at 1am
 echo "0 1 * * 0 root docker image prune -f" | sudo tee -a /etc/crontab
 
@@ -36,5 +32,18 @@ EOF
 
 # Test the configuration by sending a test email
 echo "$HOSTNAME is configured" | mail -s "Test Email" ultralife@pritchett.info
+
+#Spinning Up Portainer and Watchtower
+sudo docker run -d -p 8000:8000 -p 9443:9443 --name portainer --restart=always -v /var/run/docker.sock:/var/run/docker.sock -v portainer_data:/data portainer/portainer-ce:latest
+sudo docker run -d \
+  --name watchtower \
+  --restart=always \
+  -e WATCHTOWER_NOTIFICATIONS=email \
+  -e WATCHTOWER_NOTIFICATION_EMAIL_FROM=$(hostname)@pritchett.info \
+  -e WATCHTOWER_NOTIFICATION_EMAIL_TO=notify@pritchett.info \
+  -e WATCHTOWER_NOTIFICATION_EMAIL_SERVER=notify.pritchett.info \
+  -e WATCHTOWER_NOTIFICATION_EMAIL_SERVER_PORT=2525 \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  containrrr/watchtower
 
 echo "Done."
