@@ -11,6 +11,9 @@ sudo systemctl enable docker
 sudo docker run -d -p 8000:8000 -p 9443:9443 --name portainer --restart=always -v /var/run/docker.sock:/var/run/docker.sock -v portainer_data:/data portainer/portainer-ce:latest
 sudo docker run -d --name watchtower --restart=always -v /var/run/docker.sock:/var/run/docker.sock containrrr/watchtower
 
+#Run Docker Prune Sunday at 1am
+echo "0 1 * * 0 root docker image prune -f" | sudo tee -a /etc/crontab
+
 #Installing XCP-ng Guest Utilities
 sudo yum install xe-guest-utilities-latest -y
 sudo systemctl enable xe-linux-distribution
@@ -24,7 +27,7 @@ sudo dnf install nano -y
 sudo dnf install -y ssmtp
 sudo cp /etc/ssmtp/ssmtp.conf /etc/ssmtp/ssmtp.conf.orig
 sudo bash -c 'cat > /etc/ssmtp/ssmtp.conf' << EOF
-mailhub=10.102.0.111:2525
+mailhub=notify.pritchett.info:2525
 UseTLS=NO
 UseSTARTTLS=NO
 hostname=localhost
