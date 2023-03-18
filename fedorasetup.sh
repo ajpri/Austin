@@ -1,4 +1,6 @@
 #!/bin/bash
+# wget -O - https://raw.githubusercontent.com/ajpri/Austin/main/fedorasetup.sh | bash
+
 
 # Installing Docker
 sudo dnf install dnf-plugins-core -y
