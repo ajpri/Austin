@@ -1,6 +1,6 @@
 #!/bin/bash
 # One-liner (run over SSH on the target box):
-# curl -sSL https://raw.githubusercontent.com/ajpri/Austin/foginstall-improvements/foginstall.sh | bash
+# curl -sSL https://raw.githubusercontent.com/ajpri/linux-scripts/main/foginstall.sh | bash
 set -euo pipefail
 
 # FOG imaging server install wrapper
