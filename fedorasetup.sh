@@ -1,5 +1,5 @@
 #!/bin/bash
-# wget -O - https://raw.githubusercontent.com/ajpri/Austin/main/fedorasetup.sh | bash
+# wget -O - https://raw.githubusercontent.com/ajpri/linux-scripts/main/fedorasetup.sh | bash
 
 
 # Installing Docker
