@@ -2,7 +2,7 @@
 # One self-contained ISO downloader for Linux. No arguments shows examples only.
 # Usage: ./download-iso.sh PRODUCT [EXISTING_FOLDER] [OPTIONS]
 # Products: win11, winserver, ubuntu, debian, fedora, xcpng, proxmox, truenas,
-#           pfsense, hbcdpe, clonezilla, memtest86plus, LinuxMint, popos, arch.
+#           pfsense, opnsense, hbcdpe, clonezilla, memtest86plus, LinuxMint, popos, arch.
 # Run PRODUCT --help for version/source details.
 # Folder defaults to the current directory; it must already exist.
 # --version VALUE and --edition VALUE apply only to products supporting them.
@@ -37,6 +37,7 @@ DEFAULT_FEDORA_EDITION="workstation"
 DEFAULT_XCPNG_VERSION="8.3"
 DEFAULT_PROXMOX_VERSION="9.2"
 DEFAULT_TRUENAS_VERSION="25.10"
+DEFAULT_OPNSENSE_VERSION="26.7"
 DEFAULT_LINUXMINT_EDITION="cinnamon"
 DEFAULT_POPOS_EDITION="generic"
 
@@ -69,6 +70,7 @@ DOWNLOAD USING DEFAULTS
   $0 proxmox     # Proxmox VE $DEFAULT_PROXMOX_VERSION
   $0 truenas     # TrueNAS SCALE $DEFAULT_TRUENAS_VERSION
   $0 pfsense     # Current Netgate Installer
+  $0 opnsense    # OPNsense Community $DEFAULT_OPNSENSE_VERSION DVD installer, amd64
   $0 hbcdpe      # Current Hiren's BootCD PE
   $0 clonezilla  # Current stable Clonezilla Live, amd64
   $0 memtest86plus # Current open-source Memtest86+, 64-bit
@@ -190,6 +192,18 @@ Output: pfsense_<YYMMDD>.iso. Cleanup: all prior managed pfSense installer files
 including legacy Netgate_Installer_<version>_<YYMMDD>.iso names.
 HELP
         ;;
+        opnsense) cat <<HELP
+OPNsense Community Edition amd64 DVD ISO (live system/installer).
+Default family: $DEFAULT_OPNSENSE_VERSION. --version FAMILY overrides it.
+Selects the newest published numeric installer within that family, without
+switching families or substituting preview/business images. Verifies the official
+SHA256 of the bzip2 archive, then extracts and validates the ISO locally.
+Source: https://pkg.opnsense.org/releases/
+Output: OPNsense_<family>_<YYMMDD>.iso. Cleanup: same family only; other versions
+and legacy unversioned opnsense_<YYMMDD>.iso files are preserved.
+Example: $0 opnsense --version 26.1
+HELP
+        ;;
         hbcdpe) cat <<HELP
 Current Hiren's BootCD PE x64 from https://www.hirensbootcd.org/download/.
 No version or edition option. Checks the project's published size and SHA256.
@@ -277,6 +291,7 @@ edition_supported=0
 lock_id=$product
 case $product in
     win11|pfsense|hbcdpe|clonezilla|memtest86plus|arch) version_supported=0 ;;
+    opnsense) requested=$DEFAULT_OPNSENSE_VERSION ;;
     linuxmint) version_supported=0; edition=$DEFAULT_LINUXMINT_EDITION; edition_supported=1 ;;
     popos) version_supported=0; edition=$DEFAULT_POPOS_EDITION; edition_supported=1 ;;
     winserver) requested=$DEFAULT_WINSERVER_VERSION; lock_id=winServerEval ;;
@@ -325,6 +340,7 @@ while (( $# )); do
 done
 # Validate simple selectors before touching the destination or contacting sources.
 case $product in
+    opnsense) [[ $requested =~ ^[0-9]{2}\.[0-9]+$ ]] || die 'Use an OPNsense release family such as 26.7 or 26.1.' ;;
     linuxmint) [[ $edition == cinnamon || $edition == mate || $edition == xfce ]] || die 'LinuxMint edition must be cinnamon, mate, or xfce.' ;;
     popos) [[ $edition == generic || $edition == nvidia ]] || die 'Pop!_OS edition must be generic or nvidia.' ;;
     winserver) [[ $requested == 2022 || $requested == 2025 ]] || die 'Choose Server version 2022 or 2025.' ;;
@@ -1243,6 +1259,9 @@ def published_sha256(text, name):
         row = re.fullmatch(r'([0-9a-fA-F]{64})[ \t]+\*?(\S+)', line.strip())
         if row and row[2] == name:
             hashes.add(row[1].lower())
+        bsd = re.fullmatch(r'SHA256 \(([^)]+)\) = ([0-9a-fA-F]{64})', line.strip())
+        if bsd and bsd[1] == name:
+            hashes.add(bsd[2].lower())
     if len(hashes) != 1:
         raise RuntimeError('Missing or conflicting official SHA256 for ' + name)
     return hashes.pop()
@@ -1322,6 +1341,27 @@ def resolve_arch(work, requested, edition):
     print('Selected Arch Linux snapshot: ' + name)
 
 
+def resolve_opnsense(work, requested, edition):
+    base = 'https://pkg.opnsense.org/releases/'
+    page = download_page(base)
+    versions = set()
+    for url in page.links:
+        if url.startswith(base):
+            match = re.fullmatch(r'([0-9]{2}\.[0-9]+(?:\.[0-9]+)*)/', url[len(base):])
+            if match and match[1].split('.')[:2] == requested.split('.'):
+                versions.add(match[1])
+    if not versions:
+        raise RuntimeError('No published stable OPNsense installer found for family ' + requested)
+    version = max(versions, key=lambda v: tuple(map(int, v.split('.'))))
+    base += version + '/'
+    name = f'OPNsense-{version}-dvd-amd64.iso.bz2'
+    sha = published_sha256(fetch_metadata(base + f'OPNsense-{version}-checksums-amd64.sha256'), name)
+    (work / 'url').write_text(base + name)
+    (work / 'version').write_text(requested)
+    (work / 'sha256').write_text(sha)
+    print('Selected stable OPNsense Community installer: ' + name)
+
+
 def digest_file(path):
     result = hashlib.sha256()
     with path.open('rb') as stream:
@@ -1340,6 +1380,8 @@ def managed_history(product, version, edition, name):
         return bool(re.fullmatch(r'(?:hbcdpe|HBCD_PE_\d+\.\d+\.\d+)_\d{6}\.iso', name))
     if product in ('clonezilla', 'memtest86plus'):
         return bool(re.fullmatch(re.escape(product) + r'_\d{6}\.iso', name))
+    if product == 'opnsense':
+        return bool(re.fullmatch(r'OPNsense_' + re.escape(version) + r'_\d{6}\.iso', name))
     if product == 'arch':
         return bool(re.fullmatch(r'Arch_\d{6}\.iso', name))
     if product == 'debian':
@@ -1376,6 +1418,7 @@ def run_download(work, folder, product, requested, edition, stamp, keep, silent)
         'pfsense': resolve_pfsense, 'hbcdpe': resolve_hbcdpe,
         'clonezilla': resolve_clonezilla, 'memtest86plus': resolve_memtest86plus,
         'linuxmint': resolve_linuxmint, 'popos': resolve_popos, 'arch': resolve_arch,
+        'opnsense': resolve_opnsense,
     }
     resolvers[product](work, requested, edition)
     url = (work / 'url').read_text().strip()
@@ -1386,8 +1429,10 @@ def run_download(work, folder, product, requested, edition, stamp, keep, silent)
     if version and not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9.-]*', version):
         raise RuntimeError('Unsafe resolved version label.')
     archive = product == 'pfsense'
+    bzip2_archive = product == 'opnsense'
     zip_archive = product == 'memtest86plus'
-    source = work / ('download.iso.gz' if archive else 'download.iso.zip' if zip_archive else 'download.iso')
+    source = work / ('download.iso.gz' if archive else 'download.iso.bz2' if bzip2_archive
+                     else 'download.iso.zip' if zip_archive else 'download.iso')
     command = [
         'curl', '--disable', '--fail', '--show-error', '--location',
         '--proto', '=https', '--proto-redir', '=https', '--retry', '3',
@@ -1420,10 +1465,12 @@ def run_download(work, folder, product, requested, edition, stamp, keep, silent)
         raise RuntimeError('Download SHA-256 does not match the published checksum; existing ISOs preserved.')
     else:
         print('Verified SHA-256: ' + sha)
-    if archive:
+    if archive or bzip2_archive:
+        import bz2
         print('Decompressing verified archive...')
         extracted = work / 'installer.iso'
-        with gzip.open(source, 'rb') as inp, extracted.open('wb') as out:
+        opener = bz2.open if bzip2_archive else gzip.open
+        with opener(source, 'rb') as inp, extracted.open('wb') as out:
             shutil.copyfileobj(inp, out, length=8 * 1024 * 1024)
             out.flush()
             os.fsync(out.fileno())
@@ -1453,7 +1500,8 @@ def run_download(work, folder, product, requested, edition, stamp, keep, silent)
                 'ubuntu': 'Ubuntu_' + edition.title(), 'debian': 'Debian',
                 'fedora': 'Fedora_' + edition.title(), 'xcpng': 'XCP-ng',
                 'proxmox': 'Proxmox_VE', 'truenas': 'TrueNAS_SCALE',
-                'linuxmint': 'LinuxMint_' + edition.title(), 'popos': 'PopOS_' + edition.title()}
+                'linuxmint': 'LinuxMint_' + edition.title(), 'popos': 'PopOS_' + edition.title(),
+                'opnsense': 'OPNsense'}
     date_prefix = 'Arch' if product == 'arch' else product
     name = (f'{date_prefix}_{stamp}.iso' if product in ('pfsense', 'hbcdpe', 'clonezilla', 'memtest86plus', 'arch')
             else f'{prefixes[product]}_{version}_{stamp}.iso')
