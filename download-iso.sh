@@ -2,7 +2,8 @@
 # One self-contained ISO downloader for Linux. No arguments shows examples only.
 # Usage: ./download-iso.sh PRODUCT [EXISTING_FOLDER] [OPTIONS]
 # Products: win11, winserver, ubuntu, debian, fedora, xcpng, proxmox, truenas,
-#           pfsense, hbcdpe. Run PRODUCT --help for version/source details.
+#           pfsense, hbcdpe, clonezilla, memtest86plus, LinuxMint, popos, arch.
+# Run PRODUCT --help for version/source details.
 # Folder defaults to the current directory; it must already exist.
 # --version VALUE and --edition VALUE apply only to products supporting them.
 # --keep-existing retains history and existing exact names, but still downloads
@@ -36,6 +37,8 @@ DEFAULT_FEDORA_EDITION="workstation"
 DEFAULT_XCPNG_VERSION="8.3"
 DEFAULT_PROXMOX_VERSION="9.2"
 DEFAULT_TRUENAS_VERSION="25.10"
+DEFAULT_LINUXMINT_EDITION="cinnamon"
+DEFAULT_POPOS_EDITION="generic"
 
 set -Eeuo pipefail
 export PATH="${PATH:-/usr/bin:/bin}:/usr/local/bin"
@@ -67,6 +70,11 @@ DOWNLOAD USING DEFAULTS
   $0 truenas     # TrueNAS SCALE $DEFAULT_TRUENAS_VERSION
   $0 pfsense     # Current Netgate Installer
   $0 hbcdpe      # Current Hiren's BootCD PE
+  $0 clonezilla  # Current stable Clonezilla Live, amd64
+  $0 memtest86plus # Current open-source Memtest86+, 64-bit
+  $0 LinuxMint   # Current Linux Mint ${DEFAULT_LINUXMINT_EDITION^}, 64-bit
+  $0 popos       # Current Pop!_OS ${DEFAULT_POPOS_EDITION^}, amd64
+  $0 arch        # Current Arch Linux installation ISO, x86_64
 
 COMMON EXAMPLES
 
@@ -189,6 +197,53 @@ Output: hbcdpe_<YYMMDD>.iso. Cleanup: prior managed HBCD PE files, including
 legacy HBCD_PE_<version>_<YYMMDD>.iso names.
 HELP
         ;;
+        clonezilla) cat <<HELP
+Current stable Debian-based Clonezilla Live amd64 (not testing/alternative stable).
+No version or edition option. Uses the project's stable SHA256 checksum page
+and official SourceForge downloads. Verifies SHA256 and ISO structure.
+Source: https://clonezilla.org/downloads.php
+Output: clonezilla_<YYMMDD>.iso. Cleanup: prior managed Clonezilla ISO files.
+HELP
+        ;;
+        memtest86plus) cat <<HELP
+Current stable open-source Memtest86+ standard x86_64 ISO (not PassMark MemTest86).
+No version or edition option. Downloads the official ZIP, verifies its SHA256,
+then extracts and validates the ISO. Excludes nightly builds and other platforms.
+Source: https://www.memtest.org/
+Output: memtest86plus_<YYMMDD>.iso. Cleanup: prior managed Memtest86+ ISO files.
+The product name memtest86+ is also accepted.
+HELP
+        ;;
+        linuxmint) cat <<HELP
+Current stable Linux Mint 64-bit. Default edition: $DEFAULT_LINUXMINT_EDITION.
+--edition cinnamon|mate|xfce. No version option; discovers the newest numeric
+release in the project's stable mirror and verifies its SHA256.
+Excludes beta, LMDE, HWE, and other image variants.
+Source: https://pub.linuxmint.io/stable/
+Output: LinuxMint_<Edition>_<version>_<YYMMDD>.iso.
+Cleanup: same edition and release version only. LinuxMint is case-insensitive.
+Example: $0 LinuxMint /mnt/isos --edition xfce
+HELP
+        ;;
+        popos) cat <<HELP
+Current Pop!_OS amd64. Default edition: $DEFAULT_POPOS_EDITION.
+--edition generic|nvidia. No version option. Uses the current release advertised
+by System76's download page and the matching official build API metadata.
+Verifies the API's SHA256 and exact byte size. Excludes ARM and preview builds.
+Sources: https://system76.com/pop/download/ and https://api.pop-os.org/
+Output: PopOS_<Generic|Nvidia>_<version>_<YYMMDD>.iso.
+Cleanup: same edition and release version only. The name pop is also accepted.
+Example: $0 popos --edition nvidia
+HELP
+        ;;
+        arch) cat <<HELP
+Current Arch Linux x86_64 installation ISO. No version or edition option.
+Resolves the dated ISO from the official geo mirror's latest SHA256 manifest,
+then downloads the immutable dated path. Logs the source snapshot date.
+Source: https://geo.mirror.pkgbuild.com/iso/
+Output: Arch_<YYMMDD>.iso (run date). Cleanup: prior managed Arch ISO files.
+HELP
+        ;;
     esac
     cat <<HELP
 
@@ -212,6 +267,8 @@ product=''
 if (( $# == 0 )); then show_help; exit 0; fi
 case $1 in --help|-h) show_help; exit 0 ;; esac
 product=${1,,}
+[[ $product != memtest86+ ]] || product=memtest86plus
+[[ $product != pop ]] || product=popos
 shift
 requested=''
 edition=''
@@ -219,7 +276,9 @@ version_supported=1
 edition_supported=0
 lock_id=$product
 case $product in
-    win11|pfsense|hbcdpe) version_supported=0 ;;
+    win11|pfsense|hbcdpe|clonezilla|memtest86plus|arch) version_supported=0 ;;
+    linuxmint) version_supported=0; edition=$DEFAULT_LINUXMINT_EDITION; edition_supported=1 ;;
+    popos) version_supported=0; edition=$DEFAULT_POPOS_EDITION; edition_supported=1 ;;
     winserver) requested=$DEFAULT_WINSERVER_VERSION; lock_id=winServerEval ;;
     ubuntu) requested=$DEFAULT_UBUNTU_VERSION; edition=$DEFAULT_UBUNTU_EDITION; edition_supported=1 ;;
     debian) requested=$DEFAULT_DEBIAN_VERSION ;;
@@ -266,6 +325,8 @@ while (( $# )); do
 done
 # Validate simple selectors before touching the destination or contacting sources.
 case $product in
+    linuxmint) [[ $edition == cinnamon || $edition == mate || $edition == xfce ]] || die 'LinuxMint edition must be cinnamon, mate, or xfce.' ;;
+    popos) [[ $edition == generic || $edition == nvidia ]] || die 'Pop!_OS edition must be generic or nvidia.' ;;
     winserver) [[ $requested == 2022 || $requested == 2025 ]] || die 'Choose Server version 2022 or 2025.' ;;
     ubuntu)
         [[ $requested =~ ^[0-9]{2}\.(04|10)$ ]] || die 'Use a release family such as 24.04 or 26.10 (without a point suffix).'
@@ -501,7 +562,7 @@ def resolve_ubuntu(work, requested, edition):
 
     version = requested
     base = 'https://releases.ubuntu.com/'
-    lifecycle_url = 'https://salsa.debian.org/debian/distro-info-data/-/raw/main/ubuntu.csv' 
+    lifecycle_url = 'https://salsa.debian.org/debian/distro-info-data/-/raw/main/ubuntu.csv'
 
     def fetch(url):
         response = subprocess.run([
@@ -565,7 +626,7 @@ def resolve_debian(work, requested, edition):
 
     major = requested
     current_base = 'https://cdimage.debian.org/debian-cd/'
-    archive_base = 'https://cdimage.debian.org/cdimage/archive/' 
+    archive_base = 'https://cdimage.debian.org/cdimage/archive/'
 
     def fetch(url):
         response = subprocess.run([
@@ -627,7 +688,7 @@ def resolve_fedora(work, requested, edition):
 
     version = requested
     edition = edition.title()
-    metadata_url = 'https://fedoraproject.org/releases.json' 
+    metadata_url = 'https://fedoraproject.org/releases.json'
     try:
         response = subprocess.run([
             'curl', '--disable', '--fail', '--silent', '--show-error', '--location',
@@ -1091,6 +1152,176 @@ def resolve_hbcdpe(work, requested, edition):
         sys.exit('ERROR: Could not resolve HBCD PE ISO: ' + str(exc))
 
 
+def fetch_metadata(url):
+    response = subprocess.run([
+        'curl', '--disable', '--fail', '--silent', '--show-error', '--location', '--compressed',
+        '--proto', '=https', '--proto-redir', '=https', '--retry', '2',
+        '--retry-delay', '3', '--connect-timeout', '20', '--max-time', '120', url,
+    ], check=True, stdout=subprocess.PIPE)
+    return response.stdout.decode('utf-8-sig')
+
+
+def download_page(url):
+    from html.parser import HTMLParser
+    from urllib.parse import urljoin
+
+    class Page(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.text = []
+            self.links = set()
+
+        def handle_data(self, data):
+            self.text.append(data)
+
+        def handle_starttag(self, tag, attrs):
+            href = dict(attrs).get('href')
+            if tag == 'a' and href:
+                self.links.add(urljoin(url, href))
+
+    page = Page()
+    page.feed(fetch_metadata(url))
+    return page
+
+
+def resolve_clonezilla(work, requested, edition):
+    page = download_page('https://clonezilla.org/downloads/stable/checksums.php')
+    # BLAKE3 also uses 64 hex digits. Read only the explicitly labelled SHA256
+    # section rather than matching hashes indiscriminately across the page.
+    sections = re.findall(r'^###\s+SHA256SUMS:\s*\n(.*?)(?=^###|\Z)',
+                          '\n'.join(page.text), re.I | re.M | re.S)
+    if len(sections) != 1:
+        raise RuntimeError('Expected one official Clonezilla SHA256SUMS section.')
+    matches = set()
+    for line in sections[0].splitlines():
+        row = re.fullmatch(r'([0-9a-fA-F]{64})[ \t]+\*?'
+                           r'(clonezilla-live-(\d+(?:\.\d+)+-\d+)-amd64\.iso)', line.strip())
+        if row:
+            matches.add((row[2], row[3], row[1].lower()))
+    if len(matches) != 1:
+        raise RuntimeError('Expected one checksummed stable Clonezilla Live amd64 ISO; no substitute selected.')
+    name, version, sha = matches.pop()
+    (work / 'url').write_text('https://downloads.sourceforge.net/clonezilla/' + name)
+    (work / 'version').write_text(version)
+    (work / 'sha256').write_text(sha)
+    print('Selected stable Clonezilla Live ISO: ' + name)
+
+
+def resolve_memtest86plus(work, requested, edition):
+    page = download_page('https://www.memtest.org/')
+    images = set()
+    for url in page.links:
+        parsed = urlsplit(url)
+        match = re.fullmatch(r'/download/v(\d+(?:\.\d+)+)/mt86plus_\1_x86_64\.iso\.zip', parsed.path)
+        if (match and parsed.scheme == 'https' and parsed.netloc == 'www.memtest.org'
+                and not parsed.query and not parsed.fragment):
+            images.add((url, match[1]))
+    if len(images) != 1:
+        raise RuntimeError('Expected one current stable Memtest86+ x86_64 ISO archive; no nightly or alternate image selected.')
+    url, version = images.pop()
+    base = 'https://www.memtest.org/download/v' + version + '/'
+    if base + 'sha256sum.txt' not in page.links:
+        raise RuntimeError('Current Memtest86+ download has no matching official SHA256 manifest link.')
+    name = url.rsplit('/', 1)[-1]
+    hashes = set()
+    for line in fetch_metadata(base + 'sha256sum.txt').splitlines():
+        row = re.fullmatch(r'([0-9a-fA-F]{64})[ \t]+\*?(\S+)', line.strip())
+        if row and row[2] in (name, 'v' + version + '/' + name):
+            hashes.add(row[1].lower())
+    if len(hashes) != 1:
+        raise RuntimeError('Missing or conflicting official SHA256 for ' + name)
+    (work / 'url').write_text(url)
+    (work / 'version').write_text(version)
+    (work / 'sha256').write_text(hashes.pop())
+    (work / 'zip-member').write_text('memtest.iso')
+    print('Selected stable Memtest86+ archive: ' + name)
+
+
+def published_sha256(text, name):
+    hashes = set()
+    for line in text.splitlines():
+        row = re.fullmatch(r'([0-9a-fA-F]{64})[ \t]+\*?(\S+)', line.strip())
+        if row and row[2] == name:
+            hashes.add(row[1].lower())
+    if len(hashes) != 1:
+        raise RuntimeError('Missing or conflicting official SHA256 for ' + name)
+    return hashes.pop()
+
+
+def resolve_linuxmint(work, requested, edition):
+    base = 'https://pub.linuxmint.io/stable/'
+    page = download_page(base)
+    versions = set()
+    for url in page.links:
+        if url.startswith(base):
+            match = re.fullmatch(r'([1-9][0-9]*(?:\.[0-9]+)*)/', url[len(base):])
+            if match:
+                versions.add(match[1])
+    if not versions:
+        raise RuntimeError('No numeric stable Linux Mint release directories found.')
+    version = max(versions, key=lambda v: tuple(map(int, v.split('.'))))
+    name = f'linuxmint-{version}-{edition}-64bit.iso'
+    base += version + '/'
+    sha = published_sha256(fetch_metadata(base + 'sha256sum.txt'), name)
+    (work / 'url').write_text(base + name)
+    (work / 'sha256').write_text(sha)
+    (work / 'version').write_text(version)
+    print('Selected stable Linux Mint ISO: ' + name)
+
+
+def resolve_popos(work, requested, edition):
+    import json
+    # Use the same advertised release/channel/architecture tuple as System76's
+    # download page, then obtain its exact build URL and checksum from their API.
+    page = fetch_metadata('https://system76.com/pop/download/')
+    releases = set(re.findall(
+        r"fetchRelease\(\s*['\"]([0-9]{2}\.[0-9]{2})['\"]\s*,\s*['\"]"
+        + re.escape(edition) + r"['\"]\s*,\s*['\"]amd64['\"]\s*\)", page))
+    if len(releases) != 1:
+        raise RuntimeError('Expected one current Pop!_OS amd64 release for ' + edition)
+    version = releases.pop()
+    api = f'https://api.pop-os.org/builds/{version}/{edition}?arch=amd64'
+    data = json.loads(fetch_metadata(api))
+    if not isinstance(data, dict) or data.get('version') != version or data.get('channel') != edition:
+        raise RuntimeError('Pop!_OS build API returned a different release or edition.')
+    sha = data.get('sha_sum', '')
+    size = str(data.get('size', ''))
+    build = str(data.get('build', ''))
+    if not isinstance(sha, str) or not re.fullmatch(r'[0-9a-fA-F]{64}', sha):
+        raise RuntimeError('Pop!_OS API returned no valid SHA256.')
+    if not re.fullmatch(r'[1-9][0-9]*', size) or int(size) < 32774 or not re.fullmatch(r'[0-9]+', build):
+        raise RuntimeError('Pop!_OS API returned an invalid size or build number.')
+    name = f'pop-os_{version}_amd64_{edition}_{build}.iso'
+    url = data.get('url', '')
+    expected = f'https://iso.pop-os.org/{version}/amd64/{edition}/{build}/{name}'
+    if url != expected:
+        raise RuntimeError('Pop!_OS API returned an unexpected ISO host, path, or filename.')
+    for key, value in [('url', url), ('sha256', sha.lower()), ('size', size), ('version', version)]:
+        (work / key).write_text(value)
+    print('Selected current Pop!_OS ISO: ' + name)
+
+
+def resolve_arch(work, requested, edition):
+    import datetime
+    base = 'https://geo.mirror.pkgbuild.com/iso/'
+    manifest = fetch_metadata(base + 'latest/sha256sums.txt')
+    names = set()
+    for line in manifest.splitlines():
+        row = re.fullmatch(r'[0-9a-fA-F]{64}[ \t]+\*?'
+                           r'(archlinux-([0-9]{4}\.[0-9]{2}\.[0-9]{2})-x86_64\.iso)', line.strip())
+        if row:
+            names.add((row[1], row[2]))
+    if len(names) != 1:
+        raise RuntimeError('Expected one dated current Arch Linux x86_64 ISO in the official manifest.')
+    name, snapshot = names.pop()
+    datetime.date.fromisoformat(snapshot.replace('.', '-'))
+    sha = published_sha256(manifest, name)
+    (work / 'url').write_text(base + snapshot + '/' + name)
+    (work / 'sha256').write_text(sha)
+    (work / 'version').write_text(snapshot)
+    print('Selected Arch Linux snapshot: ' + name)
+
+
 def digest_file(path):
     result = hashlib.sha256()
     with path.open('rb') as stream:
@@ -1107,12 +1338,17 @@ def managed_history(product, version, edition, name):
         return bool(re.fullmatch(r'(?:pfsense|Netgate_Installer_\d+(?:\.\d+)+)_\d{6}\.iso', name))
     if product == 'hbcdpe':
         return bool(re.fullmatch(r'(?:hbcdpe|HBCD_PE_\d+\.\d+\.\d+)_\d{6}\.iso', name))
+    if product in ('clonezilla', 'memtest86plus'):
+        return bool(re.fullmatch(re.escape(product) + r'_\d{6}\.iso', name))
+    if product == 'arch':
+        return bool(re.fullmatch(r'Arch_\d{6}\.iso', name))
     if product == 'debian':
         major = re.escape(version.split('.')[0])
         return bool(re.fullmatch(rf'Debian_(?:Netinst_)?{major}(?:\.[0-9]+)+_\d{{6}}\.iso', name))
-    if product in ('winserver', 'ubuntu', 'fedora'):
+    if product in ('winserver', 'ubuntu', 'fedora', 'linuxmint', 'popos'):
         prefix = {'winserver': 'WinServerEval', 'ubuntu': 'Ubuntu_' + edition.title(),
-                  'fedora': 'Fedora_' + edition.title()}[product]
+                  'fedora': 'Fedora_' + edition.title(), 'linuxmint': 'LinuxMint_' + edition.title(),
+                  'popos': 'PopOS_' + edition.title()}[product]
         return bool(re.fullmatch(re.escape(prefix + '_' + version) + r'_\d{6}\.iso', name))
     prefix = {'xcpng': 'XCP-ng', 'proxmox': 'Proxmox_VE', 'truenas': 'TrueNAS_SCALE'}[product]
     pattern = re.escape(prefix) + r'_(\d+\.\d+(?:\.\d+)*(?:-[A-Za-z0-9.-]+)?)_\d{6}\.iso'
@@ -1138,6 +1374,8 @@ def run_download(work, folder, product, requested, edition, stamp, keep, silent)
         'ubuntu': resolve_ubuntu, 'debian': resolve_debian, 'fedora': resolve_fedora,
         'xcpng': resolve_xcpng, 'proxmox': resolve_proxmox, 'truenas': resolve_truenas,
         'pfsense': resolve_pfsense, 'hbcdpe': resolve_hbcdpe,
+        'clonezilla': resolve_clonezilla, 'memtest86plus': resolve_memtest86plus,
+        'linuxmint': resolve_linuxmint, 'popos': resolve_popos, 'arch': resolve_arch,
     }
     resolvers[product](work, requested, edition)
     url = (work / 'url').read_text().strip()
@@ -1148,7 +1386,8 @@ def run_download(work, folder, product, requested, edition, stamp, keep, silent)
     if version and not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9.-]*', version):
         raise RuntimeError('Unsafe resolved version label.')
     archive = product == 'pfsense'
-    source = work / ('download.iso.gz' if archive else 'download.iso')
+    zip_archive = product == 'memtest86plus'
+    source = work / ('download.iso.gz' if archive else 'download.iso.zip' if zip_archive else 'download.iso')
     command = [
         'curl', '--disable', '--fail', '--show-error', '--location',
         '--proto', '=https', '--proto-redir', '=https', '--retry', '3',
@@ -1189,6 +1428,22 @@ def run_download(work, folder, product, requested, edition, stamp, keep, silent)
             out.flush()
             os.fsync(out.fileno())
         source = extracted
+    if zip_archive:
+        import zipfile
+        print('Extracting verified ISO archive...')
+        extracted = work / 'installer.iso'
+        expected = (work / 'zip-member').read_text()
+        with zipfile.ZipFile(source) as bundle:
+            members = [member for member in bundle.infolist() if not member.is_dir()]
+            if len(members) != 1 or members[0].filename != expected:
+                raise RuntimeError('Expected one exactly named Memtest86+ ISO in the archive.')
+            # Copy the expected member to a fixed path, never extract ZIP paths.
+            # Reading through EOF also validates ZIP CRC integrity.
+            with bundle.open(members[0]) as inp, extracted.open('wb') as out:
+                shutil.copyfileobj(inp, out, length=8 * 1024 * 1024)
+                out.flush()
+                os.fsync(out.fileno())
+        source = extracted
     with source.open('rb') as inp:
         inp.seek(32769)
         if inp.read(5) != b'CD001':
@@ -1197,8 +1452,10 @@ def run_download(work, folder, product, requested, edition, stamp, keep, silent)
     prefixes = {'win11': 'Win11', 'winserver': 'WinServerEval',
                 'ubuntu': 'Ubuntu_' + edition.title(), 'debian': 'Debian',
                 'fedora': 'Fedora_' + edition.title(), 'xcpng': 'XCP-ng',
-                'proxmox': 'Proxmox_VE', 'truenas': 'TrueNAS_SCALE'}
-    name = (f'{product}_{stamp}.iso' if product in ('pfsense', 'hbcdpe')
+                'proxmox': 'Proxmox_VE', 'truenas': 'TrueNAS_SCALE',
+                'linuxmint': 'LinuxMint_' + edition.title(), 'popos': 'PopOS_' + edition.title()}
+    date_prefix = 'Arch' if product == 'arch' else product
+    name = (f'{date_prefix}_{stamp}.iso' if product in ('pfsense', 'hbcdpe', 'clonezilla', 'memtest86plus', 'arch')
             else f'{prefixes[product]}_{version}_{stamp}.iso')
     target = folder / name
     if keep and os.path.lexists(target):
