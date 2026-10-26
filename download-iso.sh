@@ -2,7 +2,8 @@
 # One self-contained ISO downloader for Linux. No arguments shows examples only.
 # Usage: ./download-iso.sh PRODUCT [EXISTING_FOLDER] [OPTIONS]
 # Products: win11, winserver, ubuntu, debian, fedora, xcpng, proxmox, truenas,
-#           pfsense, opnsense, hbcdpe, clonezilla, memtest86plus, LinuxMint, popos, arch, qubes, gparted.
+#           pfsense, opnsense, hbcdpe, clonezilla, memtest86plus, LinuxMint, popos,
+#           arch, qubes, gparted, chromeosflex, openmediavault (omv), netbootxyz.
 # Run PRODUCT --help for version/source details.
 # Folder defaults to the current directory; it must already exist.
 # --version VALUE and --edition VALUE apply only to products supporting them.
@@ -23,18 +24,22 @@
 # customization rebuilds its ISO locally; other downloads use ready-made images.
 # pfSense downloads Netgate Installer (third-party mirror + Netgate checksum),
 # not a standalone offline CE installer. Windows Server uses Evaluation media.
+# ChromeOS Flex downloads Google's stable recovery ZIP, saved as an unchanged
+# .img disk image. It verifies the ZIP's published SHA-1 and sizes plus GPT structure;
+# SHA256 is calculated for reference (Google's feed does not publish SHA256).
 # All transfers require HTTPS with certificate checking enabled. Published SHA256
-# is verified except Server Eval (Microsoft size/ETag + ISO structure, hash logged).
+# is verified except Server Eval (size/ETag + ISO structure) and ChromeOS Flex
+# (published SHA-1 + sizes + GPT structure). Calculated SHA256 is logged for both.
 # Qubes additionally verifies its ISO's PGP signature using a release key certified
 # by the pinned Qubes master key. Other products do not check detached signatures.
 # Upstream source changes can cause errors.
-# Requirements: Bash 4+, curl, Python 3 (standard library), flock, CA certificates.
-# Debian/Ubuntu: sudo apt install bash curl python3 util-linux ca-certificates
-# Fedora: sudo dnf install bash curl python3 util-linux-core ca-certificates
+# Requirements: Bash 4+, curl, Python 3 (standard library), CA certificates.
+# Debian/Ubuntu: sudo apt install bash curl python3 ca-certificates
+# Fedora: sudo dnf install bash curl python3 ca-certificates
 # Qubes additionally requires gpg: Debian/Ubuntu gnupg; Fedora gnupg2.
-# Windows edition customization additionally requires 7z, genisoimage, and
-# wimlib-imagex: Debian/Ubuntu p7zip-full genisoimage wimtools;
-# Fedora 7zip genisoimage wimlib-utils. Full 7z or 7zz is accepted.
+# Windows edition customization additionally requires 7z/7zz and genisoimage:
+# Debian/Ubuntu p7zip-full genisoimage; Fedora 7zip genisoimage.
+# Full 7z or 7zz is accepted; it also reads WIM/ESD edition metadata.
 # It verifies the original Microsoft ISO first, then rebuilds UDF media with an
 # ei.cfg selector. Other editions stay in the WIM/ESD. Only multi remains identical
 # to Microsoft's ISO. Allow about three ISO sizes of staging space for rebuilding.
@@ -57,6 +62,7 @@ DEFAULT_PROXMOX_VERSION="9.2"
 DEFAULT_TRUENAS_VERSION="25.10"
 DEFAULT_OPNSENSE_VERSION="26.7"
 DEFAULT_QUBES_VERSION="4.3"
+DEFAULT_OMV_VERSION="8"
 DEFAULT_LINUXMINT_EDITION="cinnamon"
 DEFAULT_POPOS_EDITION="generic"
 
@@ -100,6 +106,9 @@ DOWNLOAD USING DEFAULTS
   $0 popos       # Current Pop!_OS ${DEFAULT_POPOS_EDITION^}, amd64
   $0 arch        # Current Arch Linux installation ISO, x86_64
   $0 gparted     # Current stable GParted Live, amd64
+  $0 chromeosflex # Current stable ChromeOS Flex, x86-64 .img disk image
+  $0 openmediavault # Latest OpenMediaVault $DEFAULT_OMV_VERSION amd64 ISO (alias: omv)
+  $0 netbootxyz  # Current netboot.xyz BIOS/UEFI network-boot ISO
   $0 qubes       # Qubes OS $DEFAULT_QUBES_VERSION, newest stable x86_64 ISO in that family
 
 COMMON EXAMPLES
@@ -138,6 +147,45 @@ HELP
 product_help() {
     printf 'Usage: %s %s [FOLDER] [OPTIONS]\n\n' "$0" "$product"
     case $product in
+        openmediavault) cat <<HELP
+OpenMediaVault amd64 installer. Default major version: $DEFAULT_OMV_VERSION.
+--version MAJOR selects the newest numerically named ISO in that major family.
+Numeric release directories only; preview-suffixed names are excluded.
+Uses the project's SourceForge ISO directory and the selected ISO's SHA256 file.
+The filename includes the downloaded major.minor (8.3 for 8.3.1), without the
+patch suffix; full source version is logged. Requires Internet during installation.
+Source: https://sourceforge.net/projects/openmediavault/files/iso/
+Output: OpenMediaVault_<major.minor>_<YYMMDD>.iso. Cleanup: same major only,
+including older filenames that contained only the major version.
+Examples: $0 openmediavault /mnt/isos
+          $0 omv --version 7
+HELP
+        ;;
+        netbootxyz) cat <<HELP
+Current rolling netboot.xyz x86 BIOS/UEFI ISO from the official boot server.
+No version or edition option. Downloads netboot.xyz.iso and verifies its SHA256
+against netboot.xyz-sha256-checksums.txt. No additional dependencies.
+This is a small network-boot menu, not an offline OS collection; network access
+is required to fetch the selected installer/live environment when booted.
+Source: https://boot.netboot.xyz/ipxe/
+Output: netboot.xyz_<YYMMDD>.iso. Cleanup: same product's dated ISO history only.
+Example: $0 netbootxyz /mnt/isos
+HELP
+        ;;
+        chromeosflex) cat <<HELP
+Current stable ChromeOS Flex x86-64 recovery disk image from Google.
+No version or edition option. Beta/Dev/LTS channels are not selected.
+Downloads the exact ZIP named in Google's recovery feed, checks archive/image
+sizes, ZIP CRC, the published ZIP SHA-1, and primary/backup GPT structures.
+Google's feed publishes SHA-1, not SHA256; calculated image SHA256 is logged.
+Extracts the original .bin bytes unchanged and saves them with an .img extension.
+This is a USB disk image, not an ISO; no ISO conversion or USB writing is done.
+Uses Python's standard library; no extra dependencies.
+Source: https://dl.google.com/dl/edgedl/chromeos/recovery/cloudready_recovery2.json
+Output: ChromeOSFlex_<YYMMDD>.img. Cleanup: ChromeOSFlex_<YYMMDD>.img history only.
+Example: $0 chromeosflex /mnt/isos
+HELP
+        ;;
         win11) cat <<HELP
 Current Windows 11 multi-edition x64 English (US), from Microsoft's dynamic links.
 Default edition: $DEFAULT_WIN11_EDITION. No version option.
@@ -151,8 +199,8 @@ multi leaves the verified Microsoft ISO untouched. Other selections add
 sources/ei.cfg (Retail, VL=0) without removing or changing WIM/ESD images.
 An installation answer file takes precedence over ei.cfg. No product key is added.
 Verifies Microsoft's SHA256 BEFORE editing. The customized ISO has its own hash.
-Customization requires 7z/7zz, genisoimage, wimlib-imagex (Debian/Ubuntu packages:
-p7zip-full genisoimage wimtools; Fedora: 7zip genisoimage wimlib-utils).
+Customization requires 7z/7zz and genisoimage (Debian/Ubuntu packages:
+p7zip-full genisoimage; Fedora: 7zip genisoimage).
 BIOS/UEFI boot images and all payload files are
 checked after the UDF rebuild. Allow about three ISO sizes of staging space.
 Output (multi): Win11_<version>_<YYMMDD>.iso (no Multi label).
@@ -389,14 +437,10 @@ ensure_dependencies() {
     [[ -n $family ]] || die "Automatic dependency installation is unavailable for $PRETTY_NAME. Install the missing tools, then rerun."
     for cmd in "${missing[@]}"; do
         case "$family:$cmd" in
-            debian:flock) package=util-linux ;;
             debian:gpg) package=gnupg ;;
             debian:7z) package=p7zip-full ;;
-            debian:wimlib-imagex) package=wimtools ;;
-            fedora:flock) package=util-linux-core ;;
             fedora:gpg) package=gnupg2 ;;
             fedora:7z) package=7zip ;;
-            fedora:wimlib-imagex) package=wimlib-utils ;;
             *) package=$cmd ;;
         esac
         if [[ ! ${seen[$package]+yes} ]]; then
@@ -456,6 +500,8 @@ else
 fi
 [[ $product != memtest86+ ]] || product=memtest86plus
 [[ $product != pop ]] || product=popos
+[[ $product != omv ]] || product=openmediavault
+[[ $product != netboot.xyz ]] || product=netbootxyz
 shift
 requested=''
 edition=''
@@ -465,7 +511,8 @@ lock_id=$product
 case $product in
     all) (( check_only )) || die 'Use --check-deps to check all products.'; version_supported=0 ;;
     win11) version_supported=0; edition=$DEFAULT_WIN11_EDITION; edition_supported=1 ;;
-    pfsense|hbcdpe|clonezilla|memtest86plus|arch|gparted) version_supported=0 ;;
+    pfsense|hbcdpe|clonezilla|memtest86plus|arch|gparted|chromeosflex|netbootxyz) version_supported=0 ;;
+    openmediavault) requested=$DEFAULT_OMV_VERSION ;;
     opnsense) requested=$DEFAULT_OPNSENSE_VERSION ;;
     qubes) requested=$DEFAULT_QUBES_VERSION ;;
     linuxmint) version_supported=0; edition=$DEFAULT_LINUXMINT_EDITION; edition_supported=1 ;;
@@ -556,17 +603,17 @@ case $product in
     ubuntu)
         [[ $requested =~ ^[0-9]{2}\.(04|10)$ ]] || die 'Use a release family such as 24.04 or 26.10 (without a point suffix).'
         [[ $edition == desktop || $edition == server ]] || die 'Ubuntu edition must be desktop or server.' ;;
-    debian|fedora)
+    debian|fedora|openmediavault)
         [[ $requested =~ ^[1-9][0-9]*$ ]] || die 'Version must be a positive whole release number.'
         if [[ $product == fedora ]]; then
             [[ $edition == workstation || $edition == server ]] || die 'Fedora edition must be workstation or server.'
         fi ;;
 esac
 if (( silent )); then exec >/dev/null; fi
-dependencies=(curl python3 flock)
+dependencies=(curl python3)
 if [[ $product == qubes || $product == all ]]; then dependencies+=(gpg); fi
 if [[ $product == all || ( $product == win11 && $edition != multi ) ]]; then
-    dependencies+=(7z genisoimage wimlib-imagex)
+    dependencies+=(7z genisoimage)
 fi
 if (( check_only )); then
     ensure_dependencies
@@ -583,7 +630,6 @@ ensure_dependencies
 exec </dev/null
 trap 'rc=$?; printf "ERROR: ISO download failed (line %s, status %s).\n" "$LINENO" "$rc" >&2; exit "$rc"' ERR
 exec 9>"$folder/.$lock_id-download.lock"
-flock -n 9 || die "Another $product download is running in: $folder"
 work=$(mktemp -d "$folder/.$lock_id-download.XXXXXXXX")
 trap 'rm -rf -- "$work"' EXIT
 trap 'exit 130' INT
@@ -1422,6 +1468,133 @@ def download_page(url):
     return page
 
 
+def resolve_openmediavault(work, requested, edition):
+    base = 'https://sourceforge.net/projects/openmediavault/files/iso/'
+    page = download_page(base)
+    versions = set()
+    for url in page.links:
+        if url.startswith(base):
+            match = re.fullmatch(r'([0-9]+(?:\.[0-9]+)+)/', url[len(base):])
+            if match and match[1].split('.')[0] == requested:
+                versions.add(match[1])
+    if not versions:
+        raise RuntimeError('No numeric OpenMediaVault ISO release found for major ' + requested)
+    version = max(versions, key=lambda value: tuple(map(int, value.split('.'))))
+    name = f'openmediavault_{version}-amd64.iso'
+    url = f'https://downloads.sourceforge.net/project/openmediavault/iso/{version}/{name}'
+    sha = published_sha256(fetch_metadata(url + '.sha256'), name)
+    (work / 'url').write_text(url)
+    (work / 'sha256').write_text(sha)
+    (work / 'version').write_text('.'.join(version.split('.')[:2]))
+    print('Selected OpenMediaVault installer: ' + name)
+
+
+def resolve_netbootxyz(work, requested, edition):
+    base = 'https://boot.netboot.xyz/ipxe/'
+    name = 'netboot.xyz.iso'
+    sha = published_sha256(fetch_metadata(base + 'netboot.xyz-sha256-checksums.txt'), name)
+    (work / 'url').write_text(base + name)
+    (work / 'sha256').write_text(sha)
+    print('Selected current netboot.xyz BIOS/UEFI network-boot ISO: ' + name)
+
+
+def resolve_chromeosflex(work, requested, edition):
+    import json
+    feed = 'https://dl.google.com/dl/edgedl/chromeos/recovery/cloudready_recovery2.json'
+    records = json.loads(fetch_metadata(feed))
+    if not isinstance(records, list):
+        raise RuntimeError('Expected a list in the official ChromeOS Flex recovery feed.')
+    stable = [row for row in records if isinstance(row, dict) and row.get('channel') == 'STABLE'
+              and row.get('manufacturer') == 'Google ChromeOS Flex' and row.get('model') == 'ChromeOS Flex']
+    if len(stable) != 1:
+        raise RuntimeError('Expected exactly one stable ChromeOS Flex recovery image; refusing to guess.')
+    row = stable[0]
+    name, version = row.get('file', ''), row.get('version', '')
+    if (not isinstance(version, str) or not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', version)
+            or not isinstance(name, str) or not re.fullmatch(
+                r'chromeos_' + re.escape(version) + r'_reven_recovery_stable-channel_RevenMPKeys-v[0-9]+\.bin', name)):
+        raise RuntimeError('Unexpected stable ChromeOS Flex image name or version.')
+    url = 'https://dl.google.com/dl/edgedl/chromeos/recovery/' + name + '.zip'
+    if row.get('url') != url or not re.fullmatch(r'[0-9a-fA-F]{40}', str(row.get('sha1', ''))):
+        raise RuntimeError('Unexpected ChromeOS Flex download URL or missing published SHA-1.')
+    for key in ('filesize', 'zipfilesize'):
+        if type(row.get(key)) is not int or row[key] < 32774:
+            raise RuntimeError('Invalid ChromeOS Flex byte size in recovery metadata.')
+    (work / 'url').write_text(url)
+    (work / 'size').write_text(str(row['zipfilesize']))
+    (work / 'zip-member').write_text(name)
+    (work / 'image-size').write_text(str(row['filesize']))
+    # Google's recovery format defines sha1 over the ZIP, not the .bin member.
+    (work / 'zip-sha1').write_text(row['sha1'].lower())
+    print('Selected stable ChromeOS Flex recovery image: ' + name)
+
+
+def verify_chromeosflex_image(path):
+    """Check the protective MBR, both GPT copies, and ChromeOS partition types."""
+    import struct
+    import uuid
+    import zlib
+    size = path.stat().st_size
+    if size % 512 or size < 68 * 512:
+        raise RuntimeError('ChromeOS Flex disk image has an invalid sector-aligned size.')
+    last_lba = size // 512 - 1
+    with path.open('rb') as inp:
+        mbr = inp.read(512)
+        if mbr[510:512] != b'\x55\xaa' or not any(mbr[446 + n * 16 + 4] == 0xee for n in range(4)):
+            raise RuntimeError('ChromeOS Flex image has no protective GPT MBR.')
+
+        def read_gpt(lba, alternate):
+            inp.seek(lba * 512)
+            header = bytearray(inp.read(512))
+            if header[:8] != b'EFI PART':
+                raise RuntimeError('ChromeOS Flex GPT signature is missing.')
+            revision, length, checksum, reserved = struct.unpack_from('<4I', header, 8)
+            if revision != 0x10000 or not 92 <= length <= 512 or reserved:
+                raise RuntimeError('Unsupported ChromeOS Flex GPT header.')
+            struct.pack_into('<I', header, 16, 0)
+            if zlib.crc32(header[:length]) != checksum:
+                raise RuntimeError('ChromeOS Flex GPT header checksum mismatch.')
+            current, backup, first, last = struct.unpack_from('<4Q', header, 24)
+            table_lba, count, entry_size, table_crc = struct.unpack_from('<Q3I', header, 72)
+            table_bytes = count * entry_size
+            table_end = table_lba + (table_bytes + 511) // 512
+            if (current != lba or backup != alternate or not 2 <= first <= last < last_lba
+                    or not count or entry_size < 128 or entry_size % 128
+                    or table_bytes > 4 * 1024 * 1024 or table_lba < 2 or table_end > last_lba
+                    or not (table_end <= first or table_lba > last)):
+                raise RuntimeError('Invalid ChromeOS Flex GPT bounds.')
+            inp.seek(table_lba * 512)
+            table = inp.read(table_bytes)
+            if len(table) != table_bytes or zlib.crc32(table) != table_crc:
+                raise RuntimeError('ChromeOS Flex GPT partition table checksum mismatch.')
+            return bytes(header[40:72]), first, last, entry_size, table
+
+        primary = read_gpt(1, last_lba)
+        backup = read_gpt(last_lba, 1)
+        if primary != backup:
+            raise RuntimeError('ChromeOS Flex primary and backup GPT tables disagree.')
+        _, first, last, entry_size, table = primary
+        types, ranges = set(), []
+        for offset in range(0, len(table), entry_size):
+            record = table[offset:offset + entry_size]
+            if record[:16] == bytes(16):
+                continue
+            start, end = struct.unpack_from('<2Q', record, 32)
+            if not first <= start <= end <= last:
+                raise RuntimeError('ChromeOS Flex partition lies outside usable disk space.')
+            ranges.append((start, end))
+            types.add(str(uuid.UUID(bytes_le=record[:16])))
+        ranges.sort()
+        if any(a[1] >= b[0] for a, b in zip(ranges, ranges[1:])):
+            raise RuntimeError('ChromeOS Flex disk image has overlapping partitions.')
+        expected = {'fe3a2a5d-4f32-41a7-b725-accc3285a309',  # ChromeOS kernel
+                    '3cb8e202-3b7e-47dd-8a3c-7ff2a13cfcec',  # ChromeOS rootfs
+                    'c12a7328-f81f-11d2-ba4b-00a0c93ec93b'}  # EFI system
+        if not expected <= types:
+            raise RuntimeError('Disk image is missing expected ChromeOS/EFI partition types.')
+        os.fsync(inp.fileno())
+
+
 def resolve_clonezilla(work, requested, edition):
     page = download_page('https://clonezilla.org/downloads/stable/checksums.php')
     # BLAKE3 also uses 64 hex digits. Read only the explicitly labelled SHA256
@@ -1800,6 +1973,7 @@ def customize_win11(work, source, edition):
         if result.returncode:
             raise RuntimeError('Windows ISO tool failed (' + arguments[0] + '): '
                                + result.stderr.decode(errors='replace')[-4000:])
+        return result.stdout
 
     def extract(iso, destination):
         destination.mkdir()
@@ -1832,9 +2006,16 @@ def customize_win11(work, source, edition):
     for name in ('autounattend.xml', 'unattend.xml', 'sources/autounattend.xml', 'sources/unattend.xml', 'sources/pid.txt'):
         if name in lookup:
             raise RuntimeError('Source answer/product-key file can conflict with ei.cfg: ' + name)
-    xml = work / 'windows-images.xml'
-    run(['wimlib-imagex', 'info', str(media / images[0]), '--extract-xml', str(xml)])
-    editions = {node.text.strip() for node in ET.fromstring(xml.read_bytes()).findall('./IMAGE/WINDOWS/EDITIONID')
+    # Force image-number display so 7-Zip exposes the XML auxiliary entry even
+    # for single-image WIM/ESD files. Extract only this exact entry to stdout;
+    # installation image contents are never unpacked or modified.
+    xml = run([shutil.which('7z') or shutil.which('7zz'), 'x', '-tWIM', '-mis=on',
+               '-so', '-spd', '-y', '-bd', '-bso0', '-bsp0', str(media / images[0]), '[1].xml'])
+    try:
+        metadata = ET.fromstring(xml)
+    except ET.ParseError as exc:
+        raise RuntimeError('7-Zip did not return valid Windows WIM/ESD edition metadata XML.') from exc
+    editions = {node.text.strip() for node in metadata.findall('./IMAGE/WINDOWS/EDITIONID')
                 if node.text and node.text.strip()}
     available = {value.casefold(): value for value in editions}
     if not editions:
@@ -1906,6 +2087,13 @@ def customize_win11(work, source, edition):
 
 def managed_history(product, version, edition, name):
     """Only recognize names owned by this product and selected retention group."""
+    if product == 'chromeosflex':
+        return bool(re.fullmatch(r'ChromeOSFlex_\d{6}\.img', name))
+    if product == 'openmediavault':
+        major = re.escape(version.split('.')[0])
+        return bool(re.fullmatch(r'OpenMediaVault_' + major + r'(?:\.[0-9]+)?_\d{6}\.iso', name))
+    if product == 'netbootxyz':
+        return bool(re.fullmatch(r'netboot\.xyz_\d{6}\.iso', name))
     if product == 'win11':
         prefix = 'Win11' if edition == 'multi' else 'Win11_' + win11_edition_label(edition)
         return bool(re.fullmatch(re.escape(prefix) + r'_\d{2}H[12]_\d{6}\.iso', name))
@@ -1954,7 +2142,8 @@ def run_download(work, folder, product, requested, edition, stamp, keep, silent)
         'xcpng': resolve_xcpng, 'proxmox': resolve_proxmox, 'truenas': resolve_truenas,
         'pfsense': resolve_pfsense, 'hbcdpe': resolve_hbcdpe,
         'clonezilla': resolve_clonezilla, 'memtest86plus': resolve_memtest86plus,
-        'gparted': resolve_gparted,
+        'gparted': resolve_gparted, 'chromeosflex': resolve_chromeosflex,
+        'openmediavault': resolve_openmediavault, 'netbootxyz': resolve_netbootxyz,
         'linuxmint': resolve_linuxmint, 'popos': resolve_popos, 'arch': resolve_arch,
         'opnsense': resolve_opnsense,
         'qubes': resolve_qubes,
@@ -1969,7 +2158,7 @@ def run_download(work, folder, product, requested, edition, stamp, keep, silent)
         raise RuntimeError('Unsafe resolved version label.')
     archive = product == 'pfsense'
     bzip2_archive = product == 'opnsense'
-    zip_archive = product == 'memtest86plus'
+    zip_archive = product in ('memtest86plus', 'chromeosflex')
     source = work / ('download.iso.gz' if archive else 'download.iso.bz2' if bzip2_archive
                      else 'download.iso.zip' if zip_archive else 'download.iso')
     command = [
@@ -1998,12 +2187,20 @@ def run_download(work, folder, product, requested, edition, stamp, keep, silent)
     if (work / 'size').exists() and source.stat().st_size != int((work / 'size').read_text()):
         raise RuntimeError('ISO size does not match expected metadata; existing ISOs preserved.')
     sha = digest_file(source)
-    if product == 'winserver':
+    if product in ('winserver', 'chromeosflex'):
         print('SHA-256 (calculated; no official checksum comparison): ' + sha)
     elif sha != (work / 'sha256').read_text().strip().lower():
         raise RuntimeError('Download SHA-256 does not match the published checksum; existing ISOs preserved.')
     else:
         print('Verified SHA-256: ' + sha)
+    if product == 'chromeosflex':
+        zip_sha1 = hashlib.sha1()
+        with source.open('rb') as inp:
+            for chunk in iter(lambda: inp.read(8 * 1024 * 1024), b''):
+                zip_sha1.update(chunk)
+        if zip_sha1.hexdigest() != (work / 'zip-sha1').read_text():
+            raise RuntimeError('ChromeOS Flex ZIP SHA-1 does not match Google\'s recovery metadata.')
+        print('Verified published ZIP SHA-1: ' + zip_sha1.hexdigest())
     if product == 'qubes':
         verify_qubes_signature(work, work / 'qubes-iso.asc', source)
     if archive or bzip2_archive:
@@ -2018,13 +2215,15 @@ def run_download(work, folder, product, requested, edition, stamp, keep, silent)
         source = extracted
     if zip_archive:
         import zipfile
-        print('Extracting verified ISO archive...')
-        extracted = work / 'installer.iso'
+        print('Extracting recovery disk image...' if product == 'chromeosflex' else 'Extracting verified ISO archive...')
+        extracted = work / ('installer.img' if product == 'chromeosflex' else 'installer.iso')
         expected = (work / 'zip-member').read_text()
         with zipfile.ZipFile(source) as bundle:
             members = [member for member in bundle.infolist() if not member.is_dir()]
             if len(members) != 1 or members[0].filename != expected:
-                raise RuntimeError('Expected one exactly named Memtest86+ ISO in the archive.')
+                raise RuntimeError('Expected one exactly named installer image in the archive.')
+            if product == 'chromeosflex' and members[0].file_size != int((work / 'image-size').read_text()):
+                raise RuntimeError('ChromeOS Flex ZIP member size does not match recovery metadata.')
             # Copy the expected member to a fixed path, never extract ZIP paths.
             # Reading through EOF also validates ZIP CRC integrity.
             with bundle.open(members[0]) as inp, extracted.open('wb') as out:
@@ -2032,11 +2231,17 @@ def run_download(work, folder, product, requested, edition, stamp, keep, silent)
                 out.flush()
                 os.fsync(out.fileno())
         source = extracted
-    with source.open('rb') as inp:
-        inp.seek(32769)
-        if inp.read(5) != b'CD001':
-            raise RuntimeError('Downloaded file has no ISO 9660 volume descriptor; existing ISOs preserved.')
-        os.fsync(inp.fileno())
+    if product == 'chromeosflex':
+        if source.stat().st_size != int((work / 'image-size').read_text()):
+            raise RuntimeError('Extracted ChromeOS Flex image size does not match recovery metadata.')
+        verify_chromeosflex_image(source)
+        print('Image SHA-256 (calculated): ' + digest_file(source))
+    else:
+        with source.open('rb') as inp:
+            inp.seek(32769)
+            if inp.read(5) != b'CD001':
+                raise RuntimeError('Downloaded file has no ISO 9660 volume descriptor; existing ISOs preserved.')
+            os.fsync(inp.fileno())
     if product == 'win11' and edition != 'multi':
         source = customize_win11(work, source, edition)
     prefixes = {'win11': 'Win11', 'winserver': 'WinServerEval',
@@ -2044,11 +2249,12 @@ def run_download(work, folder, product, requested, edition, stamp, keep, silent)
                 'fedora': 'Fedora_' + edition.title(), 'xcpng': 'XCP-ng',
                 'proxmox': 'Proxmox_VE', 'truenas': 'TrueNAS_SCALE',
                 'linuxmint': 'LinuxMint_' + edition.title(), 'popos': 'PopOS_' + edition.title(),
-                'opnsense': 'OPNsense', 'qubes': 'Qubes'}
+                'opnsense': 'OPNsense', 'qubes': 'Qubes', 'openmediavault': 'OpenMediaVault'}
     if product == 'win11' and edition != 'multi':
         prefixes['win11'] += '_' + win11_edition_label(edition)
-    date_prefix = 'Arch' if product == 'arch' else product
-    name = (f'{date_prefix}_{stamp}.iso' if product in ('pfsense', 'hbcdpe', 'clonezilla', 'memtest86plus', 'arch', 'gparted')
+    date_prefix = {'arch': 'Arch', 'netbootxyz': 'netboot.xyz'}.get(product, product)
+    name = (f'{date_prefix}_{stamp}.iso' if product in ('pfsense', 'hbcdpe', 'clonezilla', 'memtest86plus', 'arch', 'gparted', 'netbootxyz')
+            else f'ChromeOSFlex_{stamp}.img' if product == 'chromeosflex'
             else f'{prefixes[product]}_{version}_{stamp}.iso')
     target = folder / name
     if keep and os.path.lexists(target):
@@ -2060,12 +2266,19 @@ def run_download(work, folder, product, requested, edition, stamp, keep, silent)
             if (old != target and managed_history(product, version, edition, old.name)
                     and (old.is_file() or old.is_symlink())):
                 old.unlink()
-    print('Verified ISO structure. Saved: ' + str(target))
+    print(('Verified disk image structure. Saved: ' if product == 'chromeosflex' else 'Verified ISO structure. Saved: ') + str(target))
 
 
 try:
     work, folder, product, requested, edition, stamp, keep, silent = sys.argv[1:]
+    import fcntl
+    try:
+        # FD 9 is inherited from Bash. The shared open file description keeps
+        # the lock held through Bash's staging cleanup after Python exits.
+        fcntl.flock(9, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        raise RuntimeError('Another ' + product + ' download is running in: ' + folder)
     run_download(Path(work), Path(folder), product, requested, edition, stamp, keep == '1', silent == '1')
 except Exception as exc:
-    sys.exit('ERROR: Could not download, verify, or publish ISO: ' + str(exc))
+    sys.exit('ERROR: Could not download, verify, or publish image: ' + str(exc))
 PY_ENGINE

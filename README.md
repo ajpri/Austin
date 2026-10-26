@@ -1,6 +1,6 @@
 # linux-scripts
 
-Shell scripts for setting up Linux machines and downloading installation ISOs.
+Shell scripts for setting up Linux machines and downloading installation images.
 
 ## fedorasetup.sh
 
@@ -20,7 +20,7 @@ curl -sSL https://raw.githubusercontent.com/ajpri/linux-scripts/main/foginstall.
 
 ## download-iso.sh
 
-One self-contained Linux command for downloading and verifying installation ISOs.
+One self-contained Linux command for downloading and verifying installation images.
 Downloads run without prompts and support unattended cron jobs; interactive runs
 can offer to install missing dependencies first. Run it without arguments
 for ready-to-use examples showing the defaults configured in the script.
@@ -40,6 +40,9 @@ current directory, and **must already exist**. The script never creates it.
 # Download using the product's defaults into the current directory
 ./download-iso.sh qubes
 ./download-iso.sh gparted
+./download-iso.sh chromeosflex
+./download-iso.sh omv
+./download-iso.sh netbootxyz
 
 # Choose a folder and edition
 ./download-iso.sh ubuntu /mnt/isos --edition server
@@ -82,6 +85,9 @@ All images target x86-64/amd64. Product names are case-insensitive.
 | `arch` | Current dated Arch Linux installation ISO |
 | `gparted` | Current stable GParted Live |
 | `qubes` | Configured Qubes OS family; newest stable point ISO |
+| `chromeosflex` | Current stable Google ChromeOS Flex recovery disk image, saved as `.img` |
+| `openmediavault` / `omv` | Configured major, newest numerically named amd64 ISO from the project's SourceForge directory |
+| `netbootxyz` / `netboot.xyz` | Current rolling netboot.xyz BIOS/UEFI network-boot ISO |
 
 Aliases: `memtest86+` for `memtest86plus`, and `pop` for `popos`.
 
@@ -114,17 +120,25 @@ There is no version check that skips a transfer. The selected source filename is
 logged. Output names include the local run-start date as `YYMMDD`; versioned
 products also include their release or family, such as
 `Qubes_<family>_<YYMMDD>.iso`. GParted uses `gparted_<YYMMDD>.iso`.
+ChromeOS Flex uses `ChromeOSFlex_<YYMMDD>.img`, with no version selector.
+OpenMediaVault uses `OpenMediaVault_<major.minor>_<YYMMDD>.iso`; its default major is
+configured near the top of the script, or overridden with `omv --version 8`.
+Releases are selected numerically; an 8.3.1 download produces
+`OpenMediaVault_8.3_<YYMMDD>.iso`, with the full source version logged. Cleanup
+covers the same major, including legacy major-only names, and preserves other majors.
+netboot.xyz uses `netboot.xyz_<YYMMDD>.iso` and has no version selector.
 
 Without `--keep-existing`, a verified download replaces today's exact filename
 and prunes managed history according to that product's cleanup rules. Product
 help describes the scope. Other products and unrelated files are preserved.
 Downloads stage in the destination and publish atomically after verification;
-failures before publication preserve existing ISOs. Per-product locks prevent
-concurrent downloads of the same product into the same folder.
+failures before publication preserve existing images. Per-product locks prevent
+concurrent downloads of the same product into the same folder. Locking uses
+Python’s standard-library `fcntl.flock`; no `flock` command/package is required.
 
 ### Requirements and verification
 
-Requires Linux, Bash 4+, curl, Python 3 (standard library), `flock`, and CA certificates.
+Requires Linux, Bash 4+, curl, Python 3 (standard library), and CA certificates.
 Qubes additionally requires `gpg`.
 
 ```bash
@@ -155,37 +169,54 @@ available. Fedora Atomic desktops require their own package-management workflow.
 
 ```bash
 # Debian/Ubuntu dependencies
-sudo apt install bash curl python3 util-linux ca-certificates
+sudo apt install bash curl python3 ca-certificates
 
 # Additional dependency for Qubes downloads
 sudo apt install gnupg
 
 # Additional dependencies for Windows 11 edition customization
-sudo apt install p7zip-full genisoimage wimtools
+sudo apt install p7zip-full genisoimage
 
 # Fedora dependencies
-sudo dnf install bash curl python3 util-linux-core ca-certificates
+sudo dnf install bash curl python3 ca-certificates
 
 # Additional dependency for Qubes downloads
 sudo dnf install gnupg2
 
 # Additional dependencies for Windows 11 edition customization
-sudo dnf install 7zip genisoimage wimlib-utils
+sudo dnf install 7zip genisoimage
 ```
 
 These manual examples use `apt`; the script uses `apt-get` for its stable scripting
 interface, as [recommended by Debian](https://www.debian.org/doc/manuals/debian-reference/ch02).
 The full 7-Zip executable may be named `7z` or `7zz`; reduced `7za`/`7zr` builds
 are not used for Windows UDF extraction. Fedora package mappings follow its
-official [7zip](https://packages.fedoraproject.org/pkgs/7zip/7zip/),
-[genisoimage](https://packages.fedoraproject.org/pkgs/cdrkit/genisoimage/), and
-[wimlib-utils](https://packages.fedoraproject.org/pkgs/wimlib/wimlib-utils/) listings.
+official [7zip](https://packages.fedoraproject.org/pkgs/7zip/7zip/) and
+[genisoimage](https://packages.fedoraproject.org/pkgs/cdrkit/genisoimage/) listings.
 
 HTTPS certificate validation stays enabled. Published SHA256 checksums and ISO
 structure are verified. For compressed downloads, the archive checksum is checked
 before extraction. Windows Server Evaluation is the exception: it checks Microsoft
 source URLs, expected size, strong ETag when available, and ISO structure; its
 calculated SHA256 is logged without an official checksum comparison.
+ChromeOS Flex is the other checksum exception: Google's official recovery feed
+publishes SHA-1 rather than SHA256. The hash covers the ZIP, as specified in
+[Google's recovery format](https://chromium.googlesource.com/chromiumos/user-recovery-tools/+/HEAD/README_formats.txt).
+The script checks the stable ZIP's size, exact
+member name, ZIP CRC, extracted image size and published ZIP SHA-1. It also verifies
+the protective MBR, primary/backup GPT checksums and matching partition tables,
+partition bounds, and ChromeOS/EFI partition types. A calculated image SHA256 is
+logged for reference. No additional packages are needed.
+
+ChromeOS Flex uses the exact versioned stable image from
+[Google's recovery feed](https://dl.google.com/dl/edgedl/chromeos/recovery/cloudready_recovery2.json);
+beta, development, and LTS channels are excluded. Google's original `.bin` bytes
+are extracted unchanged and saved with an `.img` extension. This is a USB disk
+image, not an ISO conversion. The script only downloads it; it does not write to
+USB devices. Allow room for both the ZIP and the extracted image during staging.
+Only `ChromeOSFlex_<YYMMDD>.img` history is pruned; other files are preserved.
+See [Google's installation instructions](https://support.google.com/chromeosflex/answer/11541904?hl=en)
+for using the image.
 
 **Qubes also requires a valid detached PGP signature on the ISO.** Its release key
 must be certified by the Qubes master key whose fingerprint is pinned in the
@@ -196,6 +227,18 @@ no option to bypass it. Other products do not verify detached signatures.
 pfSense uses the FileEagle mirror for Netgate Installer and requires its archive
 to match Netgate's official checksum. Windows Server downloads Evaluation media.
 See each product's help for its sources and specific selection behavior.
+
+OpenMediaVault verifies the chosen ISO against its `.sha256` sidecar on the
+[project's SourceForge mirror](https://sourceforge.net/projects/openmediavault/files/iso/).
+Its installer requires an Internet connection. netboot.xyz verifies the standard
+ISO against the official boot server's SHA256 manifest; this small image loads
+a network-boot menu and downloads the selected OS environment when booted.
+See [netboot.xyz downloads](https://netboot.xyz/downloads/).
+
+VMware ESXi is currently not supported. Broadcom's official free ISO download
+requires account login and acceptance of its terms, so it does not use the
+account-free workflow provided here. See
+[Broadcom's download instructions](https://knowledge.broadcom.com/external/article/399823/vmware-esxi-80-update-3e-now-available-a.html).
 
 ### Windows 11 edition selection
 
@@ -214,8 +257,9 @@ required. A customized image includes the edition, for example
 Edition aliases include Home, Home N, Home Single Language, Pro, Pro N,
 Education, Education N, Pro Education, Pro Education N, and Pro for Workstations
 and its N variant. Names are case-insensitive; use hyphens between words.
-Microsoft edition IDs are also recognized. Unknown names fail before downloading;
-recognized editions must actually exist in the downloaded WIM/ESD or the command
+Microsoft edition IDs are also recognized. Unknown names fail before downloading.
+7-Zip reads edition metadata from the downloaded WIM/ESD; no `wimlib-imagex`
+package is needed. Recognized editions must actually exist there or the command
 fails with an available-edition list. No edition is silently substituted.
 
 Customization verifies Microsoft's source checksum first, adds `sources/ei.cfg`
