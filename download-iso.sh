@@ -9,11 +9,17 @@
 # --keep-existing retains history and existing exact names, but still downloads
 # and verifies a fresh copy on every run. Default cleanup follows product scope.
 # --silent/-s suppresses routine output/progress; errors stay on stderr/nonzero.
+# --check-deps checks tools only; never prompts, installs, or downloads.
+# ./download-iso.sh --check-deps checks all products, including optional tools.
+# ./download-iso.sh win11 --edition pro --check-deps checks only that selection.
 # Options may surround the folder; use -- before a dash-prefixed folder.
 # Downloads stage in the destination, then publish atomically after validation.
 # Failures before publication preserve existing ISOs. Persistent per-product
 # locks prevent concurrent runs of the same product into the same folder.
-# No prompts, accounts, or separate helper scripts are required. Windows edition
+# Missing tools: offers installation on Fedora/Debian/Ubuntu families when stdin,
+# stdout and stderr are terminals. Requires confirmation; sudo may ask for a password.
+# Cron, redirected runs and --silent never prompt/install; errors give a command.
+# No accounts or separate helper scripts are required. Windows edition
 # customization rebuilds its ISO locally; other downloads use ready-made images.
 # pfSense downloads Netgate Installer (third-party mirror + Netgate checksum),
 # not a standalone offline CE installer. Windows Server uses Evaluation media.
@@ -23,10 +29,12 @@
 # by the pinned Qubes master key. Other products do not check detached signatures.
 # Upstream source changes can cause errors.
 # Requirements: Bash 4+, curl, Python 3 (standard library), flock, CA certificates.
-# Debian/Ubuntu: sudo apt-get install bash curl python3 util-linux ca-certificates
-# Qubes additionally requires gpg: sudo apt-get install gnupg
+# Debian/Ubuntu: sudo apt install bash curl python3 util-linux ca-certificates
+# Fedora: sudo dnf install bash curl python3 util-linux-core ca-certificates
+# Qubes additionally requires gpg: Debian/Ubuntu gnupg; Fedora gnupg2.
 # Windows edition customization additionally requires 7z, genisoimage, and
-# wimlib-imagex: sudo apt-get install p7zip-full genisoimage wimtools
+# wimlib-imagex: Debian/Ubuntu p7zip-full genisoimage wimtools;
+# Fedora 7zip genisoimage wimlib-utils. Full 7z or 7zz is accepted.
 # It verifies the original Microsoft ISO first, then rebuilds UDF media with an
 # ei.cfg selector. Other editions stay in the WIM/ESD. Only multi remains identical
 # to Microsoft's ISO. Allow about three ISO sizes of staging space for rebuilding.
@@ -56,11 +64,14 @@ set -Eeuo pipefail
 export PATH="${PATH:-/usr/bin:/bin}:/usr/local/bin"
 export LC_ALL=C
 umask 077
-exec </dev/null
 
 die() {
     printf 'ERROR: %s\n' "$*" >&2
-    printf 'Help: %s %s--help\n' "$0" "${product:+$product }" >&2
+    if [[ ${product:-} == all ]]; then
+        printf 'Help: %s --help\n' "$0" >&2
+    else
+        printf 'Help: %s %s--help\n' "$0" "${product:+$product }" >&2
+    fi
     exit 1
 }
 show_help() {
@@ -102,6 +113,10 @@ COMMON EXAMPLES
   $0 winserver --version 2022
   $0 win11 --edition pro
 
+  # Check tools only; no download or installation
+  $0 --check-deps
+  $0 win11 --edition pro --check-deps
+
   # Preserve existing files (still downloads and verifies a fresh copy)
   $0 debian --keep-existing
 
@@ -114,6 +129,10 @@ COMMON EXAMPLES
 MORE HELP
 
   $0 ubuntu --help
+
+Missing dependencies: interactive terminals offer installation on Fedora and
+Debian/Ubuntu families. Cron, redirected runs and --silent never prompt/install;
+they exit with an error and an install command instead.
 HELP
 }
 product_help() {
@@ -132,8 +151,9 @@ multi leaves the verified Microsoft ISO untouched. Other selections add
 sources/ei.cfg (Retail, VL=0) without removing or changing WIM/ESD images.
 An installation answer file takes precedence over ei.cfg. No product key is added.
 Verifies Microsoft's SHA256 BEFORE editing. The customized ISO has its own hash.
-Customization requires 7z, genisoimage, wimlib-imagex (Debian/Ubuntu packages:
-p7zip-full genisoimage wimtools). BIOS/UEFI boot images and all payload files are
+Customization requires 7z/7zz, genisoimage, wimlib-imagex (Debian/Ubuntu packages:
+p7zip-full genisoimage wimtools; Fedora: 7zip genisoimage wimlib-utils).
+BIOS/UEFI boot images and all payload files are
 checked after the UDF rebuild. Allow about three ISO sizes of staging space.
 Output (multi): Win11_<version>_<YYMMDD>.iso (no Multi label).
 Output (custom): Win11_<Edition>_<version>_<YYMMDD>.iso, e.g. Win11_Pro_26H2_261026.iso.
@@ -304,7 +324,8 @@ No automatic switch to another family; release candidates are excluded.
 Checks the published SHA256 and the ISO's detached PGP signature. The release
 key must be certified by the Qubes master key whose fingerprint is pinned in
 this script. Missing/invalid keys or signatures fail; verification is mandatory.
-Requires gpg (Debian/Ubuntu: sudo apt-get install gnupg). Runs without prompts,
+Requires gpg (Debian/Ubuntu: sudo apt install gnupg; Fedora: sudo dnf install gnupg2).
+Signature verification runs without prompts,
 using a temporary keyring; your personal GPG keyring and trust settings are unused.
 Source: https://ftp.qubes-os.org/iso/ and https://keys.qubes-os.org/keys/
 Output: Qubes_<family>_<YYMMDD>.iso. Cleanup: same family only.
@@ -317,11 +338,15 @@ HELP
 Common options:
   --keep-existing  Keep all history and an existing exact filename; always fetch fresh.
   --silent, -s     Hide routine status/progress; preserve errors and nonzero exits.
+  --check-deps     Check this selection's tools only; never install or download.
   --help, -h       Show this help without downloading.
 Folder defaults to . and must exist. Quote paths containing spaces.
 Options accept --version=VALUE / --edition=VALUE where supported.
 Without --keep-existing, verified downloads replace today's file and prune the
 managed history described above. Other products remain untouched.
+Missing dependencies: offers installation on Fedora/Debian/Ubuntu families only
+when stdin, stdout and stderr are terminals. Cron, redirected runs and --silent never
+prompt/install; missing dependencies produce an error with an install command.
 
 Examples:
   $0 $product
@@ -330,10 +355,105 @@ Examples:
 HELP
 }
 
+dependency_present() {
+    if [[ $1 == 7z ]]; then
+        command -v 7z >/dev/null || command -v 7zz >/dev/null
+    else
+        command -v "$1" >/dev/null
+    fi
+}
+
+ensure_dependencies() {
+    local cmd family='' token package answer
+    local ID='' ID_LIKE='' PRETTY_NAME='Linux'
+    local -a missing=() packages=() privilege=() install=()
+    local -A seen=()
+    for cmd in "${dependencies[@]}"; do
+        dependency_present "$cmd" || missing+=("$cmd")
+    done
+    (( ${#missing[@]} )) || return 0
+
+    # os-release is provided by the installed OS, never by downloaded metadata.
+    if [[ -r /etc/os-release ]]; then
+        source /etc/os-release
+    elif [[ -r /usr/lib/os-release ]]; then
+        source /usr/lib/os-release
+    fi
+    for token in $ID $ID_LIKE; do
+        case $token in
+            debian|ubuntu) family=debian; break ;;
+            fedora|rhel|centos) family=fedora; break ;;
+        esac
+    done
+    printf 'Missing dependencies: %s.\n' "${missing[*]}" >&2
+    [[ -n $family ]] || die "Automatic dependency installation is unavailable for $PRETTY_NAME. Install the missing tools, then rerun."
+    for cmd in "${missing[@]}"; do
+        case "$family:$cmd" in
+            debian:flock) package=util-linux ;;
+            debian:gpg) package=gnupg ;;
+            debian:7z) package=p7zip-full ;;
+            debian:wimlib-imagex) package=wimtools ;;
+            fedora:flock) package=util-linux-core ;;
+            fedora:gpg) package=gnupg2 ;;
+            fedora:7z) package=7zip ;;
+            fedora:wimlib-imagex) package=wimlib-utils ;;
+            *) package=$cmd ;;
+        esac
+        if [[ ! ${seen[$package]+yes} ]]; then
+            packages+=("$package")
+            seen[$package]=1
+        fi
+    done
+    # Ensure the standard HTTPS trust store when installing any missing tools.
+    packages+=(ca-certificates)
+    if (( EUID != 0 )); then privilege=(sudo); fi
+    if [[ $family == debian ]]; then
+        install=(apt-get -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold install -y -- "${packages[@]}")
+        printf 'Install on %s: ' "$PRETTY_NAME" >&2
+        printf '%q ' "${privilege[@]}" apt install -- "${packages[@]}" >&2
+    else
+        install=(dnf install -y -- "${packages[@]}")
+        printf 'Install on %s: ' "$PRETTY_NAME" >&2
+        printf '%q ' "${privilege[@]}" dnf install -- "${packages[@]}" >&2
+    fi
+    printf '\n' >&2
+    if (( ${check_only:-0} )); then
+        die 'Dependency check failed; no installation or download attempted.'
+    fi
+    if (( silent )) || [[ ! -t 0 || ! -t 1 || ! -t 2 ]]; then
+        die 'Install the dependencies above, then rerun. No installation attempted in non-interactive/silent mode.'
+    fi
+    command -v "${install[0]}" >/dev/null || die "Package manager ${install[0]} is unavailable. Install the dependencies using your OS's package manager, then rerun."
+    if (( EUID != 0 )); then
+        command -v sudo >/dev/null || die 'sudo is unavailable. Have an administrator install the packages above, then rerun.'
+    fi
+    printf 'Install these packages now? [y/N] ' >&2
+    IFS= read -r answer || answer=''
+    [[ $answer == [yY] || ${answer,,} == yes ]] || die 'Dependency installation declined; no download started.'
+    if [[ $family == debian ]]; then
+        "${privilege[@]}" env DEBIAN_FRONTEND=noninteractive apt-get update || die 'Package index refresh failed; no download started.'
+        "${privilege[@]}" env DEBIAN_FRONTEND=noninteractive "${install[@]}" || die 'Dependency installation failed; no download started.'
+    else
+        "${privilege[@]}" "${install[@]}" || die 'Dependency installation failed; no download started.'
+    fi
+    hash -r
+    missing=()
+    for cmd in "${dependencies[@]}"; do
+        dependency_present "$cmd" || missing+=("$cmd")
+    done
+    (( ${#missing[@]} == 0 )) || die "Dependencies still unavailable after installation: ${missing[*]}. No download started."
+}
+
 product=''
+check_only=0
 if (( $# == 0 )); then show_help; exit 0; fi
 case $1 in --help|-h) show_help; exit 0 ;; esac
-product=${1,,}
+if [[ $1 == --check-deps ]]; then
+    product=all
+    check_only=1
+else
+    product=${1,,}
+fi
 [[ $product != memtest86+ ]] || product=memtest86plus
 [[ $product != pop ]] || product=popos
 shift
@@ -343,6 +463,7 @@ version_supported=1
 edition_supported=0
 lock_id=$product
 case $product in
+    all) (( check_only )) || die 'Use --check-deps to check all products.'; version_supported=0 ;;
     win11) version_supported=0; edition=$DEFAULT_WIN11_EDITION; edition_supported=1 ;;
     pfsense|hbcdpe|clonezilla|memtest86plus|arch|gparted) version_supported=0 ;;
     opnsense) requested=$DEFAULT_OPNSENSE_VERSION ;;
@@ -366,8 +487,9 @@ options=1
 while (( $# )); do
     if (( options )); then
         case $1 in
-            --help|-h) product_help; exit 0 ;;
+            --help|-h) if [[ $product == all ]]; then show_help; else product_help; fi; exit 0 ;;
             --silent|-s) silent=1; shift; continue ;;
+            --check-deps) check_only=1; shift; continue ;;
             --keep-existing|keep-existing) keep=1; shift; continue ;;
             --version|--edition|--version=*|--edition=*)
                 key=${1%%=*}
@@ -441,18 +563,24 @@ case $product in
         fi ;;
 esac
 if (( silent )); then exec >/dev/null; fi
+dependencies=(curl python3 flock)
+if [[ $product == qubes || $product == all ]]; then dependencies+=(gpg); fi
+if [[ $product == all || ( $product == win11 && $edition != multi ) ]]; then
+    dependencies+=(7z genisoimage wimlib-imagex)
+fi
+if (( check_only )); then
+    ensure_dependencies
+    printf 'All required dependencies are available for %s. No installation or download attempted.\n' "$product"
+    exit 0
+fi
 [[ -d $destination ]] || die "Download folder does not exist or is not a directory: $destination"
 folder=$(cd -- "$destination" && pwd -P)
 [[ -w $folder ]] || die "Download folder is not writable: $folder"
 run_date=$(date +%y%m%d)
-dependencies=(curl python3 flock)
-[[ $product != qubes ]] || dependencies+=(gpg)
-if [[ $product == win11 && $edition != multi ]]; then
-    dependencies+=(7z genisoimage wimlib-imagex)
-fi
-for cmd in "${dependencies[@]}"; do
-    command -v "$cmd" >/dev/null || die "Missing dependency: $cmd"
-done
+ensure_dependencies
+# Only the optional dependency offer above may read input. Downloads and all
+# verification tools always see EOF, including runs started in a terminal.
+exec </dev/null
 trap 'rc=$?; printf "ERROR: ISO download failed (line %s, status %s).\n" "$LINENO" "$rc" >&2; exit "$rc"' ERR
 exec 9>"$folder/.$lock_id-download.lock"
 flock -n 9 || die "Another $product download is running in: $folder"
@@ -1675,7 +1803,7 @@ def customize_win11(work, source, edition):
 
     def extract(iso, destination):
         destination.mkdir()
-        run(['7z', 'x', '-tUdf', '-y', '-bd', '-bso0', '-bsp0', '-o' + str(destination), str(iso)])
+        run([shutil.which('7z') or shutil.which('7zz'), 'x', '-tUdf', '-y', '-bd', '-bso0', '-bsp0', '-o' + str(destination), str(iso)])
 
     def inventory(directory):
         result = {}

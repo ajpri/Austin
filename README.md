@@ -21,7 +21,8 @@ curl -sSL https://raw.githubusercontent.com/ajpri/linux-scripts/main/foginstall.
 ## download-iso.sh
 
 One self-contained Linux command for downloading and verifying installation ISOs.
-It runs without prompts and supports unattended cron jobs. Run it without arguments
+Downloads run without prompts and support unattended cron jobs; interactive runs
+can offer to install missing dependencies first. Run it without arguments
 for ready-to-use examples showing the defaults configured in the script.
 
 ### Quick start
@@ -101,6 +102,7 @@ download-iso.sh PRODUCT [EXISTING_FOLDER] [OPTIONS]
 | `--edition VALUE` | Selects an available edition for Windows 11, Ubuntu, Fedora, Linux Mint, or Pop!_OS |
 | `--keep-existing` | Preserves all history and an existing exact output filename, after downloading and verifying a fresh copy |
 | `--silent`, `-s` | Suppresses routine messages and progress; errors remain on stderr and failures return nonzero |
+| `--check-deps` | Checks tools only; never prompts, installs, or downloads. Exit 0 if available, nonzero if missing |
 | `--help`, `-h` | Shows general or product-specific help without downloading |
 
 Options can appear before or after the folder. Quote paths with spaces, and use
@@ -126,15 +128,58 @@ Requires Linux, Bash 4+, curl, Python 3 (standard library), `flock`, and CA cert
 Qubes additionally requires `gpg`.
 
 ```bash
+# Check all products, including Qubes and Windows edition customization tools
+./download-iso.sh --check-deps
+
+# Check only the selected product and edition
+./download-iso.sh win11 --edition pro --check-deps
+./download-iso.sh fedora --check-deps
+```
+
+Dependency-only checks do not require or touch a download folder. Missing tools
+are listed with an installation command for supported OS families. Add `--silent`
+to hide a successful check's message; errors still appear.
+
+The script checks dependencies needed by the selected product and edition. On
+Fedora and Debian/Ubuntu families (including derivatives identified through
+`/etc/os-release`), it shows the appropriate package command and offers to install
+missing tools. Installation requires an explicit **yes**; `sudo` may request your
+password. After installation it checks the tools again and continues the download.
+
+The offer appears only when standard input, standard output, and standard error are terminals.
+Cron, redirected logs, piped input, and `--silent` never prompt or install packages;
+they exit nonzero with the missing tools and the manual installation command.
+Other Linux distributions can run the downloader with dependencies preinstalled,
+but automatic installation is limited to the families above with `apt-get`/`dnf`
+available. Fedora Atomic desktops require their own package-management workflow.
+
+```bash
 # Debian/Ubuntu dependencies
-sudo apt-get install bash curl python3 util-linux ca-certificates
+sudo apt install bash curl python3 util-linux ca-certificates
 
 # Additional dependency for Qubes downloads
-sudo apt-get install gnupg
+sudo apt install gnupg
 
 # Additional dependencies for Windows 11 edition customization
-sudo apt-get install p7zip-full genisoimage wimtools
+sudo apt install p7zip-full genisoimage wimtools
+
+# Fedora dependencies
+sudo dnf install bash curl python3 util-linux-core ca-certificates
+
+# Additional dependency for Qubes downloads
+sudo dnf install gnupg2
+
+# Additional dependencies for Windows 11 edition customization
+sudo dnf install 7zip genisoimage wimlib-utils
 ```
+
+These manual examples use `apt`; the script uses `apt-get` for its stable scripting
+interface, as [recommended by Debian](https://www.debian.org/doc/manuals/debian-reference/ch02).
+The full 7-Zip executable may be named `7z` or `7zz`; reduced `7za`/`7zr` builds
+are not used for Windows UDF extraction. Fedora package mappings follow its
+official [7zip](https://packages.fedoraproject.org/pkgs/7zip/7zip/),
+[genisoimage](https://packages.fedoraproject.org/pkgs/cdrkit/genisoimage/), and
+[wimlib-utils](https://packages.fedoraproject.org/pkgs/wimlib/wimlib-utils/) listings.
 
 HTTPS certificate validation stays enabled. Published SHA256 checksums and ISO
 structure are verified. For compressed downloads, the archive checksum is checked
