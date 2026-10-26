@@ -13,7 +13,8 @@
 # Downloads stage in the destination, then publish atomically after validation.
 # Failures before publication preserve existing ISOs. Persistent per-product
 # locks prevent concurrent runs of the same product into the same folder.
-# No prompts, accounts, helper files, or local ISO construction are required.
+# No prompts, accounts, or separate helper scripts are required. Windows edition
+# customization rebuilds its ISO locally; other downloads use ready-made images.
 # pfSense downloads Netgate Installer (third-party mirror + Netgate checksum),
 # not a standalone offline CE installer. Windows Server uses Evaluation media.
 # All transfers require HTTPS with certificate checking enabled. Published SHA256
@@ -24,6 +25,11 @@
 # Requirements: Bash 4+, curl, Python 3 (standard library), flock, CA certificates.
 # Debian/Ubuntu: sudo apt-get install bash curl python3 util-linux ca-certificates
 # Qubes additionally requires gpg: sudo apt-get install gnupg
+# Windows edition customization additionally requires 7z, genisoimage, and
+# wimlib-imagex: sudo apt-get install p7zip-full genisoimage wimtools
+# It verifies the original Microsoft ISO first, then rebuilds UDF media with an
+# ei.cfg selector. Other editions stay in the WIM/ESD. Only multi remains identical
+# to Microsoft's ISO. Allow about three ISO sizes of staging space for rebuilding.
 # Allow room for new ISOs alongside existing ones. Temporary directories are
 # removed on exit; SIGKILL/power loss can leave hidden *-download.* directories.
 # Example: ./download-iso.sh ubuntu /mnt/isos --edition server > ubuntu.log 2>&1
@@ -31,6 +37,7 @@
 # 0 3 1 * * /bin/bash /path/to/download-iso.sh debian /mnt/isos >> /path/to/iso.log 2>&1
 
 # Edit these defaults periodically. Help examples use these same values.
+DEFAULT_WIN11_EDITION="multi"
 DEFAULT_WINSERVER_VERSION="2025"
 DEFAULT_UBUNTU_VERSION="26.04"
 DEFAULT_UBUNTU_EDITION="desktop"
@@ -65,7 +72,7 @@ Folder defaults to the current directory and must already exist.
 
 DOWNLOAD USING DEFAULTS
 
-  $0 win11       # Current Windows 11, English x64
+  $0 win11       # Current Windows 11, English x64; edition: $DEFAULT_WIN11_EDITION
   $0 winserver   # Windows Server Evaluation $DEFAULT_WINSERVER_VERSION
   $0 ubuntu      # Ubuntu ${DEFAULT_UBUNTU_EDITION^} $DEFAULT_UBUNTU_VERSION
   $0 debian      # Latest Debian $DEFAULT_DEBIAN_VERSION netinst
@@ -93,6 +100,7 @@ COMMON EXAMPLES
   $0 ubuntu --version 24.04 --edition server
   $0 fedora --edition server
   $0 winserver --version 2022
+  $0 win11 --edition pro
 
   # Preserve existing files (still downloads and verifies a fresh copy)
   $0 debian --keep-existing
@@ -113,9 +121,25 @@ product_help() {
     case $product in
         win11) cat <<HELP
 Current Windows 11 multi-edition x64 English (US), from Microsoft's dynamic links.
-No version or edition option. Verifies Microsoft's published SHA256.
-Output: Win11_<version>_<YYMMDD>.iso
-Default cleanup: all prior managed Windows 11 versions.
+Default edition: $DEFAULT_WIN11_EDITION. No version option.
+--edition multi|home|home-n|home-single-language|pro|pro-n|education|education-n|
+          pro-education|pro-education-n|pro-workstations|pro-workstations-n
+Microsoft IDs (Professional, Core, etc.) are also accepted, case-insensitively.
+Enterprise, Enterprise N/LTSC, Home China and IoT Enterprise IDs are recognized,
+but customization requires that edition to actually exist in the downloaded ISO.
+Typos fail before download; missing image editions fail with an available list.
+multi leaves the verified Microsoft ISO untouched. Other selections add
+sources/ei.cfg (Retail, VL=0) without removing or changing WIM/ESD images.
+An installation answer file takes precedence over ei.cfg. No product key is added.
+Verifies Microsoft's SHA256 BEFORE editing. The customized ISO has its own hash.
+Customization requires 7z, genisoimage, wimlib-imagex (Debian/Ubuntu packages:
+p7zip-full genisoimage wimtools). BIOS/UEFI boot images and all payload files are
+checked after the UDF rebuild. Allow about three ISO sizes of staging space.
+Output (multi): Win11_<version>_<YYMMDD>.iso (no Multi label).
+Output (custom): Win11_<Edition>_<version>_<YYMMDD>.iso, e.g. Win11_Pro_26H2_261026.iso.
+Cleanup: same edition's history across versions; other editions remain untouched.
+Examples: $0 win11 --edition pro
+          $0 win11 --edition ProfessionalWorkstation
 HELP
         ;;
         winserver) cat <<HELP
@@ -319,7 +343,8 @@ version_supported=1
 edition_supported=0
 lock_id=$product
 case $product in
-    win11|pfsense|hbcdpe|clonezilla|memtest86plus|arch|gparted) version_supported=0 ;;
+    win11) version_supported=0; edition=$DEFAULT_WIN11_EDITION; edition_supported=1 ;;
+    pfsense|hbcdpe|clonezilla|memtest86plus|arch|gparted) version_supported=0 ;;
     opnsense) requested=$DEFAULT_OPNSENSE_VERSION ;;
     qubes) requested=$DEFAULT_QUBES_VERSION ;;
     linuxmint) version_supported=0; edition=$DEFAULT_LINUXMINT_EDITION; edition_supported=1 ;;
@@ -370,6 +395,37 @@ while (( $# )); do
 done
 # Validate simple selectors before touching the destination or contacting sources.
 case $product in
+    win11)
+        choice=${edition,,}; choice=${choice//-/}; choice=${choice//_/}; choice=${choice// /}
+        case $choice in
+            multi) edition=multi ;;
+            home|core) edition=Core ;;
+            homen|coren) edition=CoreN ;;
+            homesinglelanguage|coresinglelanguage) edition=CoreSingleLanguage ;;
+            homechina|corecountryspecific) edition=CoreCountrySpecific ;;
+            pro|professional) edition=Professional ;;
+            pron|professionaln) edition=ProfessionalN ;;
+            prosinglelanguage|professionalsinglelanguage) edition=ProfessionalSingleLanguage ;;
+            education) edition=Education ;;
+            educationn) edition=EducationN ;;
+            proeducation|professionaleducation) edition=ProfessionalEducation ;;
+            proeducationn|professionaleducationn) edition=ProfessionalEducationN ;;
+            proworkstation|proworkstations|professionalworkstation) edition=ProfessionalWorkstation ;;
+            proworkstationn|proworkstationsn|professionalworkstationn) edition=ProfessionalWorkstationN ;;
+            enterprise) edition=Enterprise ;;
+            enterprisen) edition=EnterpriseN ;;
+            enterpriseeval) edition=EnterpriseEval ;;
+            enterpriseneval) edition=EnterpriseNEval ;;
+            enterpriseg) edition=EnterpriseG ;;
+            enterprisegn) edition=EnterpriseGN ;;
+            cloudedition) edition=CloudEdition ;;
+            cloudeditionn) edition=CloudEditionN ;;
+            enterprises|enterpriseltsc) edition=EnterpriseS ;;
+            enterprisesn|enterpriseltscn) edition=EnterpriseSN ;;
+            iotenterprise) edition=IoTEnterprise ;;
+            iotenterprises|iotenterpriseltsc) edition=IoTEnterpriseS ;;
+            *) die "Unknown Windows edition: $edition. Choose multi, home, pro, education, their N variants, home-single-language, pro-education, or pro-workstations; see win11 --help for details." ;;
+        esac ;;
     qubes) [[ $requested =~ ^[1-9][0-9]*\.[0-9]+$ ]] || die 'Use a Qubes release family such as 4.3 (without a point suffix).' ;;
     opnsense) [[ $requested =~ ^[0-9]{2}\.[0-9]+$ ]] || die 'Use an OPNsense release family such as 26.7 or 26.1.' ;;
     linuxmint) [[ $edition == cinnamon || $edition == mate || $edition == xfce ]] || die 'LinuxMint edition must be cinnamon, mate, or xfce.' ;;
@@ -391,6 +447,9 @@ folder=$(cd -- "$destination" && pwd -P)
 run_date=$(date +%y%m%d)
 dependencies=(curl python3 flock)
 [[ $product != qubes ]] || dependencies+=(gpg)
+if [[ $product == win11 && $edition != multi ]]; then
+    dependencies+=(7z genisoimage wimlib-imagex)
+fi
 for cmd in "${dependencies[@]}"; do
     command -v "$cmd" >/dev/null || die "Missing dependency: $cmd"
 done
@@ -1529,10 +1588,199 @@ def digest_file(path):
     return result.hexdigest()
 
 
+def win11_edition_label(edition):
+    return {
+        'Core': 'Home', 'CoreN': 'HomeN', 'CoreSingleLanguage': 'HomeSingleLanguage',
+        'CoreCountrySpecific': 'HomeChina', 'Professional': 'Pro', 'ProfessionalN': 'ProN',
+        'ProfessionalSingleLanguage': 'ProSingleLanguage',
+        'ProfessionalEducation': 'ProEducation', 'ProfessionalEducationN': 'ProEducationN',
+        'ProfessionalWorkstation': 'ProWorkstations', 'ProfessionalWorkstationN': 'ProWorkstationsN',
+    }.get(edition, edition)
+
+
+def windows_boot_layout(path):
+    """Read and validate the BIOS/UEFI El Torito entries without mounting an ISO."""
+    import struct
+    catalog_lba = None
+    label = None
+    with path.open('rb') as inp:
+        for sector in range(16, 256):
+            inp.seek(sector * 2048)
+            descriptor = inp.read(2048)
+            if len(descriptor) != 2048 or descriptor[1:6] != b'CD001':
+                break
+            if descriptor[0] == 1:
+                label = descriptor[40:72].decode('ascii').strip()
+            if descriptor[0] == 0 and descriptor[7:39].rstrip(b'\0 ') == b'EL TORITO SPECIFICATION':
+                catalog_lba = struct.unpack_from('<I', descriptor, 71)[0]
+            if descriptor[0] == 255:
+                break
+        if not catalog_lba or not label:
+            raise RuntimeError('Windows ISO has no recognizable volume label or El Torito boot catalog.')
+        inp.seek(catalog_lba * 2048)
+        catalog = inp.read(8192)
+    if (len(catalog) < 64 or catalog[0] != 1 or catalog[30:32] != b'\x55\xaa'
+            or sum(struct.unpack('<16H', catalog[:32])) & 0xffff):
+        raise RuntimeError('Invalid Windows ISO boot catalog.')
+    entries = {}
+
+    def entry(platform, record):
+        if record[0] != 0x88:
+            return
+        if platform in entries or record[1] != 0:
+            raise RuntimeError('Unsupported duplicate or emulated Windows boot entry.')
+        segment, count, lba = struct.unpack_from('<H2xHI', record, 2)
+        entries[platform] = (segment, count, lba)
+
+    entry(catalog[1], catalog[32:64])
+    offset = 64
+    while offset + 32 <= len(catalog) and catalog[offset] in (0x90, 0x91):
+        last, platform = catalog[offset], catalog[offset + 1]
+        count = struct.unpack_from('<H', catalog, offset + 2)[0]
+        offset += 32
+        if not count or offset + count * 32 > len(catalog):
+            raise RuntimeError('Unsupported Windows boot catalog section length.')
+        for index in range(count):
+            entry(platform, catalog[offset + index * 32:offset + (index + 1) * 32])
+        offset += count * 32
+        if last == 0x91:
+            break
+    if set(entries) != {0, 0xef}:
+        raise RuntimeError('Windows customization requires both BIOS and UEFI boot entries.')
+    return label, entries
+
+
+def windows_boot_hash(path, lba, size):
+    sha = hashlib.sha256()
+    with path.open('rb') as inp:
+        inp.seek(lba * 2048)
+        while size:
+            chunk = inp.read(min(size, 8 * 1024 * 1024))
+            if not chunk:
+                raise RuntimeError('Truncated Windows ISO boot image.')
+            sha.update(chunk)
+            size -= len(chunk)
+    return sha.hexdigest()
+
+
+def customize_win11(work, source, edition):
+    import xml.etree.ElementTree as ET
+
+    def run(arguments):
+        result = subprocess.run(arguments, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                timeout=21600, env=dict(os.environ, GENISOIMAGERC='/dev/null', MKISOFSRC='/dev/null'))
+        if result.returncode:
+            raise RuntimeError('Windows ISO tool failed (' + arguments[0] + '): '
+                               + result.stderr.decode(errors='replace')[-4000:])
+
+    def extract(iso, destination):
+        destination.mkdir()
+        run(['7z', 'x', '-tUdf', '-y', '-bd', '-bso0', '-bsp0', '-o' + str(destination), str(iso)])
+
+    def inventory(directory):
+        result = {}
+        for file in directory.rglob('*'):
+            if file.is_symlink():
+                raise RuntimeError('Unexpected symbolic link in Windows installation media.')
+            if file.is_file():
+                relative = file.relative_to(directory).as_posix()
+                result[relative] = (file.stat().st_size, digest_file(file))
+        return result
+
+    label, boot = windows_boot_layout(source)
+    media = work / 'windows-media'
+    print('Extracting verified Windows UDF media...')
+    extract(source, media)
+    lookup = {}
+    for path in media.rglob('*'):
+        if path.is_file():
+            relative = path.relative_to(media).as_posix()
+            if relative.casefold() in lookup:
+                raise RuntimeError('Windows ISO contains ambiguous case-insensitive paths.')
+            lookup[relative.casefold()] = relative
+    images = [lookup[p] for p in ('sources/install.wim', 'sources/install.esd') if p in lookup]
+    if len(images) != 1:
+        raise RuntimeError('Expected exactly one sources/install.wim or install.esd in the Microsoft ISO.')
+    for name in ('autounattend.xml', 'unattend.xml', 'sources/autounattend.xml', 'sources/unattend.xml', 'sources/pid.txt'):
+        if name in lookup:
+            raise RuntimeError('Source answer/product-key file can conflict with ei.cfg: ' + name)
+    xml = work / 'windows-images.xml'
+    run(['wimlib-imagex', 'info', str(media / images[0]), '--extract-xml', str(xml)])
+    editions = {node.text.strip() for node in ET.fromstring(xml.read_bytes()).findall('./IMAGE/WINDOWS/EDITIONID')
+                if node.text and node.text.strip()}
+    available = {value.casefold(): value for value in editions}
+    if not editions:
+        raise RuntimeError('Installation image has no readable Windows edition IDs; refusing customization.')
+    if edition.casefold() not in available:
+        raise RuntimeError('Requested Windows edition ' + edition + ' is absent. Available: '
+                           + ', '.join(sorted(editions)) + '. Existing ISOs preserved.')
+    actual = available[edition.casefold()]
+    print('Confirmed Windows edition in installation image: ' + actual)
+    sources = (media / images[0]).parent
+    cfg = media / lookup['sources/ei.cfg'] if 'sources/ei.cfg' in lookup else sources / 'ei.cfg'
+    cfg.write_bytes(('[EditionID]\r\n' + actual + '\r\n[Channel]\r\nRetail\r\n[VL]\r\n0\r\n').encode('ascii'))
+
+    chosen = {}
+    for platform, candidates in [(0, ['boot/etfsboot.com']),
+                                  (0xef, ['efi/microsoft/boot/efisys.bin', 'efi/microsoft/boot/efisys_noprompt.bin'])]:
+        for candidate in candidates:
+            if candidate not in lookup:
+                continue
+            relative = lookup[candidate]
+            file = media / relative
+            size, sha = file.stat().st_size, digest_file(file)
+            if sha == windows_boot_hash(source, boot[platform][2], size):
+                chosen[platform] = (relative, size, sha)
+                break
+        if platform not in chosen:
+            raise RuntimeError('Cannot preserve the source Windows BIOS/UEFI boot image.')
+    catalog = '.edition-boot.catalog'
+    if catalog.casefold() in lookup:
+        raise RuntimeError('Source conflicts with the customization boot catalog path.')
+    print('Recording payload hashes; installation images remain unchanged...')
+    expected = inventory(media)
+    output = work / 'windows-custom.iso'
+    command = ['genisoimage', '-quiet', '-iso-level', '3', '-udf', '-allow-limited-size',
+               '-J', '-joliet-long', '-V', label, '-c', catalog]
+    for platform in (0, 0xef):
+        segment, count, _ = boot[platform]
+        if not count:
+            raise RuntimeError('Unsupported Windows boot entry load size.')
+        if platform == 0xef:
+            command += ['-eltorito-alt-boot']
+        command += ['-b' if platform == 0 else '-e', chosen[platform][0], '-no-emul-boot',
+                    '-boot-load-size', str(count), '-boot-load-seg', str(segment)]
+    command += ['-o', str(output), str(media)]
+    print('Rebuilding Windows ISO with ' + actual + ' ei.cfg (BIOS + UEFI, UDF)...')
+    run(command)
+    rebuilt_label, rebuilt_boot = windows_boot_layout(output)
+    if rebuilt_label != label:
+        raise RuntimeError('Rebuilt Windows ISO volume label changed unexpectedly.')
+    for platform, (_, size, sha) in chosen.items():
+        if (rebuilt_boot[platform][:2] != boot[platform][:2]
+                or windows_boot_hash(output, rebuilt_boot[platform][2], size) != sha):
+            raise RuntimeError('Rebuilt Windows ISO did not preserve BIOS/UEFI boot data.')
+    # Re-use the extracted tree's space to check every rebuilt UDF file, including
+    # large WIM/ESD files. The peak staging footprint is about three ISO sizes.
+    shutil.rmtree(media)
+    print('Verifying rebuilt UDF payloads and ei.cfg...')
+    extract(output, media)
+    observed = inventory(media)
+    observed.pop(catalog, None)  # New El Torito catalog is ISO boot metadata.
+    if observed != expected:
+        raise RuntimeError('Rebuilt Windows payload verification failed; existing ISOs preserved.')
+    with output.open('rb') as inp:
+        os.fsync(inp.fileno())
+    print('Verified all rebuilt payloads, edition selector, and BIOS/UEFI boot images.')
+    print('Customized ISO SHA-256 (not Microsoft\'s original ISO checksum): ' + digest_file(output))
+    return output
+
+
 def managed_history(product, version, edition, name):
     """Only recognize names owned by this product and selected retention group."""
     if product == 'win11':
-        return bool(re.fullmatch(r'Win11_\d{2}H[12]_\d{6}\.iso', name))
+        prefix = 'Win11' if edition == 'multi' else 'Win11_' + win11_edition_label(edition)
+        return bool(re.fullmatch(re.escape(prefix) + r'_\d{2}H[12]_\d{6}\.iso', name))
     if product == 'pfsense':
         return bool(re.fullmatch(r'(?:pfsense|Netgate_Installer_\d+(?:\.\d+)+)_\d{6}\.iso', name))
     if product == 'hbcdpe':
@@ -1661,12 +1909,16 @@ def run_download(work, folder, product, requested, edition, stamp, keep, silent)
         if inp.read(5) != b'CD001':
             raise RuntimeError('Downloaded file has no ISO 9660 volume descriptor; existing ISOs preserved.')
         os.fsync(inp.fileno())
+    if product == 'win11' and edition != 'multi':
+        source = customize_win11(work, source, edition)
     prefixes = {'win11': 'Win11', 'winserver': 'WinServerEval',
                 'ubuntu': 'Ubuntu_' + edition.title(), 'debian': 'Debian',
                 'fedora': 'Fedora_' + edition.title(), 'xcpng': 'XCP-ng',
                 'proxmox': 'Proxmox_VE', 'truenas': 'TrueNAS_SCALE',
                 'linuxmint': 'LinuxMint_' + edition.title(), 'popos': 'PopOS_' + edition.title(),
                 'opnsense': 'OPNsense', 'qubes': 'Qubes'}
+    if product == 'win11' and edition != 'multi':
+        prefixes['win11'] += '_' + win11_edition_label(edition)
     date_prefix = 'Arch' if product == 'arch' else product
     name = (f'{date_prefix}_{stamp}.iso' if product in ('pfsense', 'hbcdpe', 'clonezilla', 'memtest86plus', 'arch', 'gparted')
             else f'{prefixes[product]}_{version}_{stamp}.iso')

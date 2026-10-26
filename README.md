@@ -44,6 +44,7 @@ current directory, and **must already exist**. The script never creates it.
 ./download-iso.sh ubuntu /mnt/isos --edition server
 ./download-iso.sh LinuxMint --edition xfce
 ./download-iso.sh popos --edition nvidia
+./download-iso.sh win11 --edition pro
 
 # Preserve existing ISO files, or suppress routine output
 ./download-iso.sh qubes /mnt/isos --keep-existing
@@ -62,7 +63,7 @@ All images target x86-64/amd64. Product names are case-insensitive.
 
 | Product argument | Download selection |
 | --- | --- |
-| `win11` | Current Windows 11 English (US) multi-edition ISO |
+| `win11` | Current Windows 11 English (US); untouched multi-edition or an `ei.cfg` edition selector |
 | `winserver` | Windows Server Evaluation; version 2022 or 2025 |
 | `ubuntu` | Configured release family, newest point ISO; Desktop or Server |
 | `debian` | Configured major release, newest point release; netinst ISO |
@@ -97,7 +98,7 @@ download-iso.sh PRODUCT [EXISTING_FOLDER] [OPTIONS]
 | Option | Behavior |
 | --- | --- |
 | `--version VALUE` | Overrides the configured version for products supporting version selection; see product help for accepted formats |
-| `--edition VALUE` | Selects an available edition for Ubuntu, Fedora, Linux Mint, or Pop!_OS |
+| `--edition VALUE` | Selects an available edition for Windows 11, Ubuntu, Fedora, Linux Mint, or Pop!_OS |
 | `--keep-existing` | Preserves all history and an existing exact output filename, after downloading and verifying a fresh copy |
 | `--silent`, `-s` | Suppresses routine messages and progress; errors remain on stderr and failures return nonzero |
 | `--help`, `-h` | Shows general or product-specific help without downloading |
@@ -130,6 +131,9 @@ sudo apt-get install bash curl python3 util-linux ca-certificates
 
 # Additional dependency for Qubes downloads
 sudo apt-get install gnupg
+
+# Additional dependencies for Windows 11 edition customization
+sudo apt-get install p7zip-full genisoimage wimtools
 ```
 
 HTTPS certificate validation stays enabled. Published SHA256 checksums and ISO
@@ -147,6 +151,38 @@ no option to bypass it. Other products do not verify detached signatures.
 pfSense uses the FileEagle mirror for Netgate Installer and requires its archive
 to match Netgate's official checksum. Windows Server downloads Evaluation media.
 See each product's help for its sources and specific selection behavior.
+
+### Windows 11 edition selection
+
+```bash
+./download-iso.sh win11 --edition multi          # Original, unchanged Microsoft ISO
+./download-iso.sh win11 --edition pro            # Setup selects Windows 11 Pro
+./download-iso.sh win11 --edition pro-workstations
+./download-iso.sh win11 --edition ProfessionalN  # Microsoft IDs also accepted
+```
+
+`multi` is the default. It keeps the existing filename format,
+`Win11_<version>_<YYMMDD>.iso`, with no `Multi` label and no customization tools
+required. A customized image includes the edition, for example
+`Win11_Pro_<version>_<YYMMDD>.iso`. Cleanup histories are separate by edition.
+
+Edition aliases include Home, Home N, Home Single Language, Pro, Pro N,
+Education, Education N, Pro Education, Pro Education N, and Pro for Workstations
+and its N variant. Names are case-insensitive; use hyphens between words.
+Microsoft edition IDs are also recognized. Unknown names fail before downloading;
+recognized editions must actually exist in the downloaded WIM/ESD or the command
+fails with an available-edition list. No edition is silently substituted.
+
+Customization verifies Microsoft's source checksum first, adds `sources/ei.cfg`
+with the selected edition (`Retail`, `VL=0`), and rebuilds UDF media. It retains
+the other installation images and adds no product key. An installation answer
+file takes precedence over `ei.cfg`.
+
+The rebuild checks BIOS/UEFI boot images, every payload file, and the new selector.
+Its calculated SHA256 is logged separately; a customized ISO does not match
+Microsoft's original checksum. Allow about three ISO sizes of temporary staging
+space, in addition to any existing destination files. `--keep-existing` still
+downloads, customizes, and verifies a fresh copy before retaining an existing file.
 
 ### Monthly cron example
 
