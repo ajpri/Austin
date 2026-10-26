@@ -2,7 +2,7 @@
 # One self-contained ISO downloader for Linux. No arguments shows examples only.
 # Usage: ./download-iso.sh PRODUCT [EXISTING_FOLDER] [OPTIONS]
 # Products: win11, winserver, ubuntu, debian, fedora, xcpng, proxmox, truenas,
-#           pfsense, opnsense, hbcdpe, clonezilla, memtest86plus, LinuxMint, popos, arch.
+#           pfsense, opnsense, hbcdpe, clonezilla, memtest86plus, LinuxMint, popos, arch, qubes, gparted.
 # Run PRODUCT --help for version/source details.
 # Folder defaults to the current directory; it must already exist.
 # --version VALUE and --edition VALUE apply only to products supporting them.
@@ -18,9 +18,12 @@
 # not a standalone offline CE installer. Windows Server uses Evaluation media.
 # All transfers require HTTPS with certificate checking enabled. Published SHA256
 # is verified except Server Eval (Microsoft size/ETag + ISO structure, hash logged).
-# Detached GPG signatures are not checked. Upstream source changes can cause errors.
+# Qubes additionally verifies its ISO's PGP signature using a release key certified
+# by the pinned Qubes master key. Other products do not check detached signatures.
+# Upstream source changes can cause errors.
 # Requirements: Bash 4+, curl, Python 3 (standard library), flock, CA certificates.
 # Debian/Ubuntu: sudo apt-get install bash curl python3 util-linux ca-certificates
+# Qubes additionally requires gpg: sudo apt-get install gnupg
 # Allow room for new ISOs alongside existing ones. Temporary directories are
 # removed on exit; SIGKILL/power loss can leave hidden *-download.* directories.
 # Example: ./download-iso.sh ubuntu /mnt/isos --edition server > ubuntu.log 2>&1
@@ -38,6 +41,7 @@ DEFAULT_XCPNG_VERSION="8.3"
 DEFAULT_PROXMOX_VERSION="9.2"
 DEFAULT_TRUENAS_VERSION="25.10"
 DEFAULT_OPNSENSE_VERSION="26.7"
+DEFAULT_QUBES_VERSION="4.3"
 DEFAULT_LINUXMINT_EDITION="cinnamon"
 DEFAULT_POPOS_EDITION="generic"
 
@@ -77,6 +81,8 @@ DOWNLOAD USING DEFAULTS
   $0 LinuxMint   # Current Linux Mint ${DEFAULT_LINUXMINT_EDITION^}, 64-bit
   $0 popos       # Current Pop!_OS ${DEFAULT_POPOS_EDITION^}, amd64
   $0 arch        # Current Arch Linux installation ISO, x86_64
+  $0 gparted     # Current stable GParted Live, amd64
+  $0 qubes       # Qubes OS $DEFAULT_QUBES_VERSION, newest stable x86_64 ISO in that family
 
 COMMON EXAMPLES
 
@@ -219,6 +225,15 @@ Source: https://clonezilla.org/downloads.php
 Output: clonezilla_<YYMMDD>.iso. Cleanup: prior managed Clonezilla ISO files.
 HELP
         ;;
+        gparted) cat <<HELP
+Current stable GParted Live amd64 ISO. No version or edition option.
+Reads the current stable SHA256 manifest from the GParted project and downloads
+its exact versioned image from the project's SourceForge stable directory.
+Excludes testing releases, ZIP archives, and other CPU architectures.
+Source: https://gparted.org/gparted-live/stable/CHECKSUMS.TXT
+Output: gparted_<YYMMDD>.iso. Cleanup: prior managed GParted ISO files only.
+HELP
+        ;;
         memtest86plus) cat <<HELP
 Current stable open-source Memtest86+ standard x86_64 ISO (not PassMark MemTest86).
 No version or edition option. Downloads the official ZIP, verifies its SHA256,
@@ -258,6 +273,20 @@ Source: https://geo.mirror.pkgbuild.com/iso/
 Output: Arch_<YYMMDD>.iso (run date). Cleanup: prior managed Arch ISO files.
 HELP
         ;;
+        qubes) cat <<HELP
+Qubes OS x86_64. Default family: $DEFAULT_QUBES_VERSION.
+--version FAMILY selects the newest stable point release within that family.
+No automatic switch to another family; release candidates are excluded.
+Checks the published SHA256 and the ISO's detached PGP signature. The release
+key must be certified by the Qubes master key whose fingerprint is pinned in
+this script. Missing/invalid keys or signatures fail; verification is mandatory.
+Requires gpg (Debian/Ubuntu: sudo apt-get install gnupg). Runs without prompts,
+using a temporary keyring; your personal GPG keyring and trust settings are unused.
+Source: https://ftp.qubes-os.org/iso/ and https://keys.qubes-os.org/keys/
+Output: Qubes_<family>_<YYMMDD>.iso. Cleanup: same family only.
+Example: $0 qubes /mnt/isos --version $DEFAULT_QUBES_VERSION
+HELP
+        ;;
     esac
     cat <<HELP
 
@@ -290,8 +319,9 @@ version_supported=1
 edition_supported=0
 lock_id=$product
 case $product in
-    win11|pfsense|hbcdpe|clonezilla|memtest86plus|arch) version_supported=0 ;;
+    win11|pfsense|hbcdpe|clonezilla|memtest86plus|arch|gparted) version_supported=0 ;;
     opnsense) requested=$DEFAULT_OPNSENSE_VERSION ;;
+    qubes) requested=$DEFAULT_QUBES_VERSION ;;
     linuxmint) version_supported=0; edition=$DEFAULT_LINUXMINT_EDITION; edition_supported=1 ;;
     popos) version_supported=0; edition=$DEFAULT_POPOS_EDITION; edition_supported=1 ;;
     winserver) requested=$DEFAULT_WINSERVER_VERSION; lock_id=winServerEval ;;
@@ -340,6 +370,7 @@ while (( $# )); do
 done
 # Validate simple selectors before touching the destination or contacting sources.
 case $product in
+    qubes) [[ $requested =~ ^[1-9][0-9]*\.[0-9]+$ ]] || die 'Use a Qubes release family such as 4.3 (without a point suffix).' ;;
     opnsense) [[ $requested =~ ^[0-9]{2}\.[0-9]+$ ]] || die 'Use an OPNsense release family such as 26.7 or 26.1.' ;;
     linuxmint) [[ $edition == cinnamon || $edition == mate || $edition == xfce ]] || die 'LinuxMint edition must be cinnamon, mate, or xfce.' ;;
     popos) [[ $edition == generic || $edition == nvidia ]] || die 'Pop!_OS edition must be generic or nvidia.' ;;
@@ -358,7 +389,9 @@ if (( silent )); then exec >/dev/null; fi
 folder=$(cd -- "$destination" && pwd -P)
 [[ -w $folder ]] || die "Download folder is not writable: $folder"
 run_date=$(date +%y%m%d)
-for cmd in curl python3 flock; do
+dependencies=(curl python3 flock)
+[[ $product != qubes ]] || dependencies+=(gpg)
+for cmd in "${dependencies[@]}"; do
     command -v "$cmd" >/dev/null || die "Missing dependency: $cmd"
 done
 trap 'rc=$?; printf "ERROR: ISO download failed (line %s, status %s).\n" "$LINENO" "$rc" >&2; exit "$rc"' ERR
@@ -371,7 +404,9 @@ trap 'exit 143' TERM
 
 # Source resolvers only select a URL and verification metadata. The shared engine
 # below handles every transfer, verification, output name, and retention policy.
-python3 - "$work" "$folder" "$product" "$requested" "$edition" "$run_date" "$keep" "$silent" <<'PY_ENGINE'
+# Parse the exit with this command so editing the script during a long download
+# cannot make Bash resume reading at a stale offset after the engine finishes.
+python3 - "$work" "$folder" "$product" "$requested" "$edition" "$run_date" "$keep" "$silent" <<'PY_ENGINE'; exit
 import gzip
 import hashlib
 import os
@@ -1223,6 +1258,30 @@ def resolve_clonezilla(work, requested, edition):
     print('Selected stable Clonezilla Live ISO: ' + name)
 
 
+def resolve_gparted(work, requested, edition):
+    manifest = fetch_metadata('https://gparted.org/gparted-live/stable/CHECKSUMS.TXT')
+    # BLAKE3 also has 64 hex digits: only accept the explicitly labelled SHA256
+    # section of the project's CURRENT STABLE manifest, never a testing listing.
+    sections = re.findall(r'^###\s+SHA256SUMS:\s*\n(.*?)(?=^###|\Z)',
+                          manifest, re.I | re.M | re.S)
+    if len(sections) != 1:
+        raise RuntimeError('Expected one official GParted stable SHA256SUMS section.')
+    matches = set()
+    for line in sections[0].splitlines():
+        row = re.fullmatch(r'([0-9a-fA-F]{64})[ \t]+\*?'
+                           r'(gparted-live-([0-9]+(?:\.[0-9]+)+-[0-9]+)-amd64\.iso)', line.strip())
+        if row:
+            matches.add((row[2], row[3], row[1].lower()))
+    if len(matches) != 1:
+        raise RuntimeError('Expected one checksummed current stable GParted Live amd64 ISO; no substitute selected.')
+    name, version, sha = matches.pop()
+    url = f'https://downloads.sourceforge.net/project/gparted/gparted-live-stable/{version}/{name}'
+    (work / 'url').write_text(url)
+    (work / 'version').write_text(version)
+    (work / 'sha256').write_text(sha)
+    print('Selected stable GParted Live ISO: ' + name)
+
+
 def resolve_memtest86plus(work, requested, edition):
     page = download_page('https://www.memtest.org/')
     images = set()
@@ -1362,6 +1421,106 @@ def resolve_opnsense(work, requested, edition):
     print('Selected stable OPNsense Community installer: ' + name)
 
 
+def qubes_gpg(work, *arguments, input_bytes=None):
+    command = [
+        'gpg', '--no-options', '--batch', '--no-tty', '--no-autostart',
+        '--no-auto-key-retrieve', '--auto-key-locate', 'clear',
+        '--homedir', str(work / 'qubes-keyring'), *arguments,
+    ]
+    response = subprocess.run(command, input=input_bytes, stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE, timeout=3600)
+    if response.returncode:
+        raise RuntimeError('Qubes PGP verification failed: ' + response.stderr.decode(errors='replace').strip())
+    return response.stdout.decode('utf-8')
+
+
+def qubes_primary_fingerprint(work, path):
+    listing = qubes_gpg(work, '--with-colons', '--import-options', 'show-only', '--import', str(path))
+    fingerprints = []
+    primary = False
+    for line in listing.splitlines():
+        fields = line.split(':')
+        if fields[0] == 'pub':
+            primary = True
+        elif fields[0] == 'sub':
+            primary = False
+        elif fields[0] == 'fpr' and primary:
+            fingerprints.append(fields[9])
+            primary = False
+    if len(fingerprints) != 1 or not re.fullmatch(r'[0-9A-F]{40}', fingerprints[0]):
+        raise RuntimeError('Expected exactly one primary public key in ' + path.name)
+    return fingerprints[0]
+
+
+def prepare_qubes_keyring(work, family):
+    # Root of trust published by the Qubes project; do not derive the trusted
+    # fingerprint from the key server response being authenticated.
+    master = '427F11FD0FAA4B080123F01CDDFA1A3E36879494'
+    keybase = 'https://keys.qubes-os.org/keys/'
+    home = work / 'qubes-keyring'
+    home.mkdir(mode=0o700)
+    master_file, release_file = work / 'qubes-master.asc', work / 'qubes-release.asc'
+    master_file.write_text(fetch_metadata(keybase + 'qubes-master-signing-key.asc'))
+    release_file.write_text(fetch_metadata(keybase + f'qubes-release-{family}-signing-key.asc'))
+    if qubes_primary_fingerprint(work, master_file) != master:
+        raise RuntimeError('Downloaded Qubes master key does not match the pinned fingerprint.')
+    release = qubes_primary_fingerprint(work, release_file)
+    if release == master:
+        raise RuntimeError('Expected a separate Qubes release signing key.')
+    qubes_gpg(work, '--import', str(master_file), str(release_file))
+    # Trust only the pinned master, only in this run's private temporary keyring.
+    # GPG checks its certifications, expiration and revocation when establishing
+    # full validity for the release key and its expected release identity.
+    qubes_gpg(work, '--import-ownertrust', input_bytes=(master + ':6:\n').encode())
+    qubes_gpg(work, '--check-trustdb')
+    master_rows = [line.split(':') for line in qubes_gpg(work, '--with-colons', '--list-keys', master).splitlines()]
+    if not any(row[0] == 'pub' and row[1] == 'u' for row in master_rows):
+        raise RuntimeError('Qubes master key is expired, revoked, or invalid.')
+    rows = [line.split(':') for line in qubes_gpg(work, '--with-colons', '--list-keys', release).splitlines()]
+    expected_uid = f'Qubes OS Release {family} Signing Key'
+    if (not any(row[0] == 'pub' and row[1] == 'f' for row in rows)
+            or not any(row[0] == 'uid' and row[1] == 'f' and row[9] == expected_uid for row in rows)):
+        raise RuntimeError('Qubes release key is not validly certified by the pinned master for family ' + family)
+    (work / 'qubes-signer').write_text(release)
+    print('Authenticated Qubes release key through the pinned master: ' + release)
+
+
+def verify_qubes_signature(work, signature, payload):
+    status = qubes_gpg(work, '--status-fd', '1', '--verify', str(signature), str(payload))
+    rows = [line.split() for line in status.splitlines() if line.startswith('[GNUPG:] ')]
+    bad = {'BADSIG', 'ERRSIG', 'NO_PUBKEY', 'EXPSIG', 'EXPKEYSIG', 'REVKEYSIG'}
+    if any(row[1] in bad for row in rows):
+        raise RuntimeError('Invalid or expired Qubes PGP signature.')
+    valid = [row for row in rows if row[1] == 'VALIDSIG']
+    expected = (work / 'qubes-signer').read_text()
+    if (len(valid) != 1 or len(valid[0]) < 12 or valid[0][11] != expected
+            or valid[0][9] not in {'8', '9', '10', '11'}):
+        raise RuntimeError('Qubes signature does not use the authenticated release key and a SHA2 digest.')
+    print('Verified Qubes PGP signature with authenticated release key.')
+
+
+def resolve_qubes(work, requested, edition):
+    base = 'https://ftp.qubes-os.org/iso/'
+    page = download_page(base)
+    images = set()
+    for url in page.links:
+        if url.startswith(base):
+            match = re.fullmatch(r'Qubes-R([0-9]+\.[0-9]+(?:\.[0-9]+)?)-x86_64\.iso', url[len(base):])
+            if match and match[1].split('.')[:2] == requested.split('.'):
+                images.add((tuple(map(int, match[1].split('.'))), url[len(base):]))
+    if not images:
+        raise RuntimeError('No stable Qubes x86_64 ISO found for family ' + requested)
+    _, name = max(images)
+    url = base + name
+    sha = published_sha256(fetch_metadata(url + '.DIGESTS'), name)
+    (work / 'qubes-iso.asc').write_text(fetch_metadata(url + '.asc'))
+    prepare_qubes_keyring(work, requested)
+    (work / 'url').write_text(url)
+    (work / 'version').write_text(requested)
+    (work / 'sha256').write_text(sha)
+    print('Selected stable Qubes ISO: ' + name)
+
+
 def digest_file(path):
     result = hashlib.sha256()
     with path.open('rb') as stream:
@@ -1378,10 +1537,12 @@ def managed_history(product, version, edition, name):
         return bool(re.fullmatch(r'(?:pfsense|Netgate_Installer_\d+(?:\.\d+)+)_\d{6}\.iso', name))
     if product == 'hbcdpe':
         return bool(re.fullmatch(r'(?:hbcdpe|HBCD_PE_\d+\.\d+\.\d+)_\d{6}\.iso', name))
-    if product in ('clonezilla', 'memtest86plus'):
+    if product in ('clonezilla', 'memtest86plus', 'gparted'):
         return bool(re.fullmatch(re.escape(product) + r'_\d{6}\.iso', name))
     if product == 'opnsense':
         return bool(re.fullmatch(r'OPNsense_' + re.escape(version) + r'_\d{6}\.iso', name))
+    if product == 'qubes':
+        return bool(re.fullmatch(r'Qubes_' + re.escape(version) + r'_\d{6}\.iso', name))
     if product == 'arch':
         return bool(re.fullmatch(r'Arch_\d{6}\.iso', name))
     if product == 'debian':
@@ -1417,8 +1578,10 @@ def run_download(work, folder, product, requested, edition, stamp, keep, silent)
         'xcpng': resolve_xcpng, 'proxmox': resolve_proxmox, 'truenas': resolve_truenas,
         'pfsense': resolve_pfsense, 'hbcdpe': resolve_hbcdpe,
         'clonezilla': resolve_clonezilla, 'memtest86plus': resolve_memtest86plus,
+        'gparted': resolve_gparted,
         'linuxmint': resolve_linuxmint, 'popos': resolve_popos, 'arch': resolve_arch,
         'opnsense': resolve_opnsense,
+        'qubes': resolve_qubes,
     }
     resolvers[product](work, requested, edition)
     url = (work / 'url').read_text().strip()
@@ -1465,6 +1628,8 @@ def run_download(work, folder, product, requested, edition, stamp, keep, silent)
         raise RuntimeError('Download SHA-256 does not match the published checksum; existing ISOs preserved.')
     else:
         print('Verified SHA-256: ' + sha)
+    if product == 'qubes':
+        verify_qubes_signature(work, work / 'qubes-iso.asc', source)
     if archive or bzip2_archive:
         import bz2
         print('Decompressing verified archive...')
@@ -1501,9 +1666,9 @@ def run_download(work, folder, product, requested, edition, stamp, keep, silent)
                 'fedora': 'Fedora_' + edition.title(), 'xcpng': 'XCP-ng',
                 'proxmox': 'Proxmox_VE', 'truenas': 'TrueNAS_SCALE',
                 'linuxmint': 'LinuxMint_' + edition.title(), 'popos': 'PopOS_' + edition.title(),
-                'opnsense': 'OPNsense'}
+                'opnsense': 'OPNsense', 'qubes': 'Qubes'}
     date_prefix = 'Arch' if product == 'arch' else product
-    name = (f'{date_prefix}_{stamp}.iso' if product in ('pfsense', 'hbcdpe', 'clonezilla', 'memtest86plus', 'arch')
+    name = (f'{date_prefix}_{stamp}.iso' if product in ('pfsense', 'hbcdpe', 'clonezilla', 'memtest86plus', 'arch', 'gparted')
             else f'{prefixes[product]}_{version}_{stamp}.iso')
     target = folder / name
     if keep and os.path.lexists(target):
